@@ -19,7 +19,21 @@ module Test.Consensus.Shelley.Examples (
   , examplesShelley
   ) where
 
+import qualified Data.Map as Map
 import qualified Data.Set as Set
+import           GHC.Stack (HasCallStack)
+
+import           Cardano.Slotting.EpochInfo (fixedEpochInfo)
+import           Cardano.Slotting.Time (mkSlotLength)
+
+import           Cardano.Ledger.Alonzo.Genesis (AlonzoGenesis (..))
+import           Cardano.Ledger.Alonzo.Language (Language (PlutusV1))
+import           Cardano.Ledger.Alonzo.Scripts (CostModel (..), ExUnits (..),
+                     Prices (..))
+import           Cardano.Ledger.BaseTypes (NonNegativeInterval, boundRational)
+import           Cardano.Ledger.Coin (Coin (..))
+import qualified Cardano.Ledger.Era as Core
+import           Cardano.Ledger.Shelley.Genesis (mkShelleyGlobals)
 
 import           Ouroboros.Network.Block (Serialised (..))
 
@@ -28,6 +42,7 @@ import           Ouroboros.Consensus.HeaderValidation
 import           Ouroboros.Consensus.Ledger.Extended
 import           Ouroboros.Consensus.Ledger.SupportsMempool
 import           Ouroboros.Consensus.Storage.Serialisation
+import           Ouroboros.Consensus.Util.Time (secondsToNominalDiffTime)
 
 import           Test.Cardano.Ledger.Shelley.Orphans ()
 
@@ -60,9 +75,10 @@ codecConfig = ShelleyCodecConfig
 
 fromShelleyLedgerExamples
   :: ShelleyBasedEra era
-  => ShelleyLedgerExamples era
+  => Core.TranslationContext era
+  -> ShelleyLedgerExamples era
   -> Golden.Examples (ShelleyBlock era)
-fromShelleyLedgerExamples ShelleyLedgerExamples {
+fromShelleyLedgerExamples tc ShelleyLedgerExamples {
                             sleResultExamples = ShelleyResultExamples{..}
                             , ..} =
   Golden.Examples {
@@ -77,6 +93,7 @@ fromShelleyLedgerExamples ShelleyLedgerExamples {
     , exampleQuery            = queries
     , exampleResult           = results
     , exampleAnnTip           = unlabelled annTip
+    , exampleLedgerConfig     = unlabelled ledgerConfig
     , exampleLedgerState      = unlabelled ledgerState
     , exampleChainDepState    = unlabelled chainDepState
     , exampleExtLedgerState   = unlabelled extLedgerState
@@ -127,15 +144,45 @@ fromShelleyLedgerExamples ShelleyLedgerExamples {
     extLedgerState = ExtLedgerState
                        ledgerState
                        (genesisHeaderState chainDepState)
+    ledgerConfig = exampleShelleyLedgerConfig tc
 
 examplesShelley :: Golden.Examples (ShelleyBlock StandardShelley)
-examplesShelley = fromShelleyLedgerExamples ledgerExamplesShelley
+examplesShelley = fromShelleyLedgerExamples () ledgerExamplesShelley
 
 examplesAllegra :: Golden.Examples (ShelleyBlock StandardAllegra)
-examplesAllegra = fromShelleyLedgerExamples ledgerExamplesAllegra
+examplesAllegra = fromShelleyLedgerExamples () ledgerExamplesAllegra
 
 examplesMary :: Golden.Examples (ShelleyBlock StandardMary)
-examplesMary = fromShelleyLedgerExamples ledgerExamplesMary
+examplesMary = fromShelleyLedgerExamples () ledgerExamplesMary
 
 examplesAlonzo :: Golden.Examples (ShelleyBlock StandardAlonzo)
-examplesAlonzo = fromShelleyLedgerExamples ledgerExamplesAlonzo
+examplesAlonzo = fromShelleyLedgerExamples tc ledgerExamplesAlonzo
+  where
+    tc = AlonzoGenesis {
+            coinsPerUTxOWord     = Coin 1
+          , costmdls             = Map.fromList [(PlutusV1, CostModel (Map.fromList [("A", 79), ("V", 78)]))]
+          , prices               = Prices (boundRational' 90) (boundRational' 91)
+          , maxTxExUnits         = ExUnits 123 123
+          , maxBlockExUnits      = ExUnits 223 223
+          , maxValSize           = 1234
+          , collateralPercentage = 20
+          , maxCollateralInputs  = 30
+          }
+
+    boundRational' :: HasCallStack => Rational -> NonNegativeInterval
+    boundRational' x = case boundRational x of
+      Nothing -> error $ "Expected non-negative value but got: " <> show x
+      Just x' -> x'
+
+exampleShelleyLedgerConfig :: Core.TranslationContext era -> ShelleyLedgerConfig era
+exampleShelleyLedgerConfig translationContext = ShelleyLedgerConfig {
+      shelleyLedgerCompactGenesis = compactGenesis testShelleyGenesis
+    , shelleyLedgerGlobals = mkShelleyGlobals
+        testShelleyGenesis
+        epochInfo
+        26
+    , shelleyLedgerTranslationContext = translationContext
+    }
+  where
+    epochInfo  = fixedEpochInfo (EpochSize 4) slotLength
+    slotLength = mkSlotLength (secondsToNominalDiffTime 7)
