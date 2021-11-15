@@ -31,7 +31,7 @@ type instance BlockProtocol (ShelleyBlock era) = TPraos (EraCrypto era)
 instance ShelleyBasedEra era => BlockSupportsProtocol (ShelleyBlock era) where
   validateView _cfg (ShelleyHeader hdr _) = hdr
 
-  selectView cfg hdr@(ShelleyHeader shdr _) = TPraosChainSelectView {
+  selectView cfg hdr@(ShelleyHeader shdr _) = PraosChainSelectView {
         csvChainLength = blockNo hdr
       , csvSlotNo      = blockSlot hdr
       , csvSelfIssued  = selfIssued
