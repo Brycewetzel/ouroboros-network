@@ -93,7 +93,7 @@ import           Ouroboros.Consensus.Protocol.TPraos (MaxMajorProtVer (..),
 import           Ouroboros.Consensus.Shelley.Eras (EraCrypto)
 import           Ouroboros.Consensus.Shelley.Ledger.Block
 import           Ouroboros.Consensus.Shelley.Ledger.Config
-import           Ouroboros.Consensus.Shelley.Ledger.TPraos ()
+import           Ouroboros.Consensus.Shelley.Ledger.Protocol ()
 
 {-------------------------------------------------------------------------------
   Ledger errors
