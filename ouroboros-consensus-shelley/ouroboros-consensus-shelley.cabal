@@ -40,7 +40,12 @@ library
                        Ouroboros.Consensus.Shelley.Ledger.PeerSelection
                        Ouroboros.Consensus.Shelley.Ledger.Protocol
                        Ouroboros.Consensus.Shelley.Node
+                       Ouroboros.Consensus.Shelley.Node.Common
+                       Ouroboros.Consensus.Shelley.Node.TPraos
                        Ouroboros.Consensus.Shelley.Node.Serialisation
+                       Ouroboros.Consensus.Shelley.Protocol.Abstract
+                       Ouroboros.Consensus.Shelley.Protocol.Praos
+                       Ouroboros.Consensus.Shelley.Protocol.TPraos
                        Ouroboros.Consensus.Shelley.ShelleyBased
                        Ouroboros.Consensus.Shelley.ShelleyHFC
 
@@ -49,11 +54,13 @@ library
                      , bytestring        >=0.10  && <0.11
                      , cardano-binary
                      , cardano-crypto-class
+                     , cardano-data
                      , cardano-ledger-core
                      , cardano-protocol-tpraos
                      , cardano-prelude
                      , cardano-slotting
                      , cborg             >=0.2.2 && <0.3
+                     , compact-map
                      , containers        >=0.5   && <0.7
                      , data-default-class
                      , deepseq

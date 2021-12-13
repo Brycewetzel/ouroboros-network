@@ -32,12 +32,12 @@ data ShelleyNodeToClientVersion =
   | ShelleyNodeToClientVersion5
   deriving (Show, Eq, Ord, Enum, Bounded)
 
-instance HasNetworkProtocolVersion (ShelleyBlock era) where
-  type BlockNodeToNodeVersion   (ShelleyBlock era) = ShelleyNodeToNodeVersion
-  type BlockNodeToClientVersion (ShelleyBlock era) = ShelleyNodeToClientVersion
+instance HasNetworkProtocolVersion (ShelleyBlock proto era) where
+  type BlockNodeToNodeVersion   (ShelleyBlock proto era) = ShelleyNodeToNodeVersion
+  type BlockNodeToClientVersion (ShelleyBlock proto era) = ShelleyNodeToClientVersion
 
 -- TODO #2668 make this era-specific
-instance SupportedNetworkProtocolVersion (ShelleyBlock era) where
+instance SupportedNetworkProtocolVersion (ShelleyBlock proto era) where
   supportedNodeToNodeVersions   _ = Map.fromList [
         (NodeToNodeV_1, ShelleyNodeToNodeVersion1)
         -- V_2 enables block size hints for Byron headers and the hard fork

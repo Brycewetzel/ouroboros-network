@@ -22,8 +22,8 @@ import           Ouroboros.Consensus.Shelley.ShelleyBased
 overShelleyBasedLedgerState ::
      forall c. PraosCrypto c
   => (   forall era. (EraCrypto era ~ c, ShelleyBasedEra era)
-      => LedgerState (ShelleyBlock era)
-      -> LedgerState (ShelleyBlock era)
+      => LedgerState (ShelleyBlock proto era)
+      -> LedgerState (ShelleyBlock proto era)
      )
   -> LedgerState (CardanoBlock c)
   -> LedgerState (CardanoBlock c)

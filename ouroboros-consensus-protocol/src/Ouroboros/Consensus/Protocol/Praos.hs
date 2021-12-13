@@ -16,7 +16,14 @@
 {-# OPTIONS_GHC -Wno-unticked-promoted-constructors #-}
 
 module Ouroboros.Consensus.Protocol.Praos (
-    Praos
+    ConsensusConfig (..)
+  , Praos
+  , PraosCannotForge (..)
+  , PraosCrypto
+  , PraosFields (..)
+  , PraosIsLeader (..)
+  , PraosParams (..)
+  , PraosToSign (..)
   , forgePraosFields
   , praosCheckCanForge
   ) where
@@ -40,7 +47,8 @@ import           Cardano.Ledger.PoolDistr
 import           Cardano.Ledger.Shelley.API (computeStabilityWindow)
 import qualified Cardano.Ledger.Shelley.API as SL
 import           Cardano.Ledger.Slot (Duration (Duration), (+*))
-import           Cardano.Protocol.TPraos.BHeader (checkLeaderValue, prevHashToNonce)
+import           Cardano.Protocol.TPraos.BHeader (checkLeaderValue,
+                     prevHashToNonce)
 import           Cardano.Protocol.TPraos.OCert (KESPeriod (KESPeriod),
                      OCert (OCert), OCertSignable)
 import qualified Cardano.Protocol.TPraos.OCert as OCert
@@ -54,7 +62,6 @@ import           Codec.Serialise (Serialise (decode, encode))
 import           Control.Exception (throw)
 import           Control.Monad (unless)
 import           Control.Monad.Except (Except, runExcept, throwError)
-import           Data.ByteString (ByteString)
 import           Data.Coerce (coerce)
 import           Data.Functor.Identity (runIdentity)
 import           Data.Map.Strict (Map)
@@ -71,12 +78,14 @@ import           Ouroboros.Consensus.Protocol.Ledger.HotKey (HotKey)
 import qualified Ouroboros.Consensus.Protocol.Ledger.HotKey as HotKey
 import           Ouroboros.Consensus.Protocol.Ledger.Util (isNewEpoch)
 import           Ouroboros.Consensus.Protocol.Praos.Common
+import           Ouroboros.Consensus.Protocol.Praos.Header (HeaderBody)
 import           Ouroboros.Consensus.Protocol.Praos.VRF (UnifiedVRF,
                      mkUnifiedVRF, vrfLeaderCheckValue, vrfNonceValue)
 import qualified Ouroboros.Consensus.Protocol.Praos.Views as Views
 import           Ouroboros.Consensus.Ticked (Ticked)
 import           Ouroboros.Consensus.Util.Versioned (VersionDecoder (Decode),
                      VersionNumber, decodeVersion, encodeVersion)
+import GHC.Natural (Natural)
 
 data Praos c
 
@@ -84,7 +93,7 @@ class
   ( Crypto c,
     DSIGN.Signable (DSIGN c) (OCertSignable c),
     DSIGN.Signable (DSIGN c) (SL.Hash c EraIndependentTxBody),
-    KES.Signable (KES c) ByteString,
+    KES.Signable (KES c) (HeaderBody c),
     VRF.Signable (VRF c) UnifiedVRF
   ) =>
   PraosCrypto c
@@ -196,21 +205,13 @@ data PraosParams = PraosParams
     -- | Testnet or mainnet?
     praosNetworkId         :: !SL.Network,
     -- | The system start, as projected from the chain's genesis block.
-    praosSystemStart       :: !SystemStart
+    praosSystemStart       :: !SystemStart,
+    -- | Maximum header size
+    praosMaxHeaderSize     :: !Natural,
+    -- | Maximum block body size
+    praosMaxBodySize       :: !Natural
   }
   deriving (Generic, NoThunks)
-
-data PraosCanBeLeader c = PraosCanBeLeader
-  { -- | Certificate delegating rights from the stake pool cold key (or
-    -- genesis stakeholder delegate cold key) to the online KES key.
-    praosCanBeLeaderOpCert     :: !(OCert.OCert c),
-    -- | Stake pool cold key or genesis stakeholder delegate cold key.
-    praosCanBeLeaderColdVerKey :: !(SL.VKey 'SL.BlockIssuer c),
-    praosCanBeLeaderSignKeyVRF :: !(SL.SignKeyVRF c)
-  }
-  deriving (Generic)
-
-instance PraosCrypto c => NoThunks (PraosCanBeLeader c)
 
 -- | Assembled proof that the issuer has the right to issue a block in the
 -- selected slot.
@@ -580,7 +581,7 @@ validateKESSignature
 
     DSIGN.verifySignedDSIGN () vkcold (OCert.ocertToSignable oc) tau ?!:
       InvalidSignatureOCERT n c0
-    KES.verifySignedKES () vk_hot t (Views.hvSignedBytes b) (Views.hvSignature b) ?!:
+    KES.verifySignedKES () vk_hot t (Views.hvSigned b) (Views.hvSignature b) ?!:
       InvalidKesSignatureOCERT kp_ c0_ t
 
     case currentIssueNo of

@@ -13,8 +13,8 @@ import qualified Cardano.Ledger.Shelley.API as SL
 import           Cardano.Protocol.TPraos.BHeader (PrevHash)
 import           Cardano.Protocol.TPraos.OCert (OCert)
 import           Cardano.Slotting.Slot (SlotNo)
-import           Data.ByteString (ByteString)
 import           Ouroboros.Consensus.Protocol.Praos.VRF (UnifiedVRF)
+import Ouroboros.Consensus.Protocol.Praos.Header (HeaderBody)
 
 -- | View of the block header required by the Praos protocol.
 data HeaderView crypto = HeaderView
@@ -30,10 +30,10 @@ data HeaderView crypto = HeaderView
     hvOCert       :: !(OCert crypto),
     -- | Slot
     hvSlotNo      :: !SlotNo,
-    -- | Bytes of the header which must be signed
-    hvSignedBytes :: !ByteString,
+    -- | Header which must be signed
+    hvSigned :: !(HeaderBody crypto),
     -- | KES Signature of the header
-    hvSignature   :: !(SignedKES (KES crypto) ByteString)
+    hvSignature   :: !(SignedKES (KES crypto) (HeaderBody crypto))
   }
 
 newtype LedgerView crypto = LedgerView
