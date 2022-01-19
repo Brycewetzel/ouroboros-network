@@ -20,11 +20,11 @@ module Main (main) where
 
 import           Control.Monad.Except
 
-import qualified Codec.Serialise.Class as Serialise
+import qualified Codec.CBOR.Read as CBOR
 import           Codec.CBOR.Term (Term (..))
-import qualified Codec.CBOR.Term     as CBOR
-import qualified Codec.CBOR.Read     as CBOR
-import qualified Codec.CBOR.Write    as CBOR
+import qualified Codec.CBOR.Term as CBOR
+import qualified Codec.CBOR.Write as CBOR
+import qualified Codec.Serialise.Class as Serialise
 
 import           Data.Bool (bool)
 import qualified Data.ByteString.Lazy as BL
@@ -35,66 +35,78 @@ import           Data.Ord (Down (..))
 import qualified Data.Text as Text
 
 import           System.Directory (doesDirectoryExist)
-import           System.Exit (ExitCode(..))
+import           System.Exit (ExitCode (..))
 import           System.FilePath
 import           System.IO (hClose)
 import           System.IO.Temp (withTempFile)
 import           System.Process.ByteString.Lazy
 
-import           Network.TypedProtocol.Core
 import           Network.TypedProtocol.Codec
+import           Network.TypedProtocol.Core
 
-import           Ouroboros.Network.Block (Point, Tip, encodeTip,
-                   decodeTip, wrapCBORinCBOR, unwrapCBORinCBOR)
+import           Ouroboros.Network.Block (Point, SlotNo, Tip, decodeTip,
+                     encodeTip, unwrapCBORinCBOR, wrapCBORinCBOR)
 import           Ouroboros.Network.CodecCBORTerm
 import           Ouroboros.Network.Magic
-import           Ouroboros.Network.Testing.ConcreteBlock (BlockHeader (..), Block)
+import           Ouroboros.Network.Testing.ConcreteBlock (Block,
+                     BlockHeader (..))
 
-import           Ouroboros.Network.NodeToNode (NodeToNodeVersion (..),
-                   NodeToNodeVersionData (..), nodeToNodeHandshakeCodec)
-import           Ouroboros.Network.NodeToNode.Version (DiffusionMode (..),
-                   nodeToNodeCodecCBORTerm)
 import           Ouroboros.Network.NodeToClient (NodeToClientVersion (..),
-                   NodeToClientVersionData (..), nodeToClientHandshakeCodec)
-import           Ouroboros.Network.NodeToClient.Version (nodeToClientCodecCBORTerm)
-import           Ouroboros.Network.Protocol.ChainSync.Type (ChainSync)
-import qualified Ouroboros.Network.Protocol.ChainSync.Type as ChainSync
-import           Ouroboros.Network.Protocol.ChainSync.Codec (codecChainSync)
-import           Ouroboros.Network.Protocol.ChainSync.Test ()
-import           Ouroboros.Network.Protocol.BlockFetch.Type (BlockFetch)
-import qualified Ouroboros.Network.Protocol.BlockFetch.Type as BlockFetch
+                     NodeToClientVersionData (..), nodeToClientHandshakeCodec)
+import           Ouroboros.Network.NodeToClient.Version
+                     (nodeToClientCodecCBORTerm)
+import           Ouroboros.Network.NodeToNode (NodeToNodeVersion (..),
+                     NodeToNodeVersionData (..), nodeToNodeHandshakeCodec)
+import           Ouroboros.Network.NodeToNode.Version (DiffusionMode (..),
+                     nodeToNodeCodecCBORTerm)
 import           Ouroboros.Network.Protocol.BlockFetch.Codec (codecBlockFetch)
 import           Ouroboros.Network.Protocol.BlockFetch.Test ()
+import           Ouroboros.Network.Protocol.BlockFetch.Type (BlockFetch)
+import qualified Ouroboros.Network.Protocol.BlockFetch.Type as BlockFetch
+import           Ouroboros.Network.Protocol.ChainSync.Codec (codecChainSync)
+import           Ouroboros.Network.Protocol.ChainSync.Test ()
+import           Ouroboros.Network.Protocol.ChainSync.Type (ChainSync)
+import qualified Ouroboros.Network.Protocol.ChainSync.Type as ChainSync
+import           Ouroboros.Network.Protocol.Handshake.Test (VersionNumber,
+                     versionNumberHandshakeCodec)
 import           Ouroboros.Network.Protocol.Handshake.Type (Handshake)
 import qualified Ouroboros.Network.Protocol.Handshake.Type as Handshake
-import           Ouroboros.Network.Protocol.Handshake.Test (VersionNumber,
-                   versionNumberHandshakeCodec)
-import           Ouroboros.Network.Protocol.KeepAlive.Type (KeepAlive)
-import qualified Ouroboros.Network.Protocol.KeepAlive.Type as KeepAlive
 import           Ouroboros.Network.Protocol.KeepAlive.Codec (codecKeepAlive_v2)
 import           Ouroboros.Network.Protocol.KeepAlive.Test ()
+import           Ouroboros.Network.Protocol.KeepAlive.Type (KeepAlive)
+import qualified Ouroboros.Network.Protocol.KeepAlive.Type as KeepAlive
+import qualified Ouroboros.Network.Protocol.LocalStateQuery.Test as LocalStateQuery
+import           Ouroboros.Network.Protocol.LocalStateQuery.Type
+                     (LocalStateQuery)
+import qualified Ouroboros.Network.Protocol.LocalStateQuery.Type as LocalStateQuery
+import           Ouroboros.Network.Protocol.LocalTxMonitor.Codec
+                     (codecLocalTxMonitor)
+import qualified Ouroboros.Network.Protocol.LocalTxMonitor.Test as LocalTxMonitor
+import           Ouroboros.Network.Protocol.LocalTxMonitor.Type (LocalTxMonitor)
+import qualified Ouroboros.Network.Protocol.LocalTxMonitor.Type as LocalTxMonitor
+import           Ouroboros.Network.Protocol.LocalTxSubmission.Codec
+                     (codecLocalTxSubmission)
+import qualified Ouroboros.Network.Protocol.LocalTxSubmission.Test as LocalTxSubmission
+import           Ouroboros.Network.Protocol.LocalTxSubmission.Type
+                     (LocalTxSubmission)
+import qualified Ouroboros.Network.Protocol.LocalTxSubmission.Type as LocalTxSubmission
+import qualified Ouroboros.Network.Protocol.Trans.Hello.Type as Hello
+import           Ouroboros.Network.Protocol.TxSubmission.Codec
+                     (codecTxSubmission)
+import           Ouroboros.Network.Protocol.TxSubmission.Test (Tx, TxId)
 import           Ouroboros.Network.Protocol.TxSubmission.Type (TxSubmission)
 import qualified Ouroboros.Network.Protocol.TxSubmission.Type as TxSubmission
-import           Ouroboros.Network.Protocol.TxSubmission.Codec (codecTxSubmission)
-import           Ouroboros.Network.Protocol.TxSubmission.Test (TxId, Tx)
+import           Ouroboros.Network.Protocol.TxSubmission2.Codec
+                     (codecTxSubmission2)
+import           Ouroboros.Network.Protocol.TxSubmission2.Test ()
 import           Ouroboros.Network.Protocol.TxSubmission2.Type (TxSubmission2)
 import qualified Ouroboros.Network.Protocol.TxSubmission2.Type as TxSubmission2
-import           Ouroboros.Network.Protocol.TxSubmission2.Codec (codecTxSubmission2)
-import           Ouroboros.Network.Protocol.TxSubmission2.Test ()
-import           Ouroboros.Network.Protocol.LocalTxSubmission.Type (LocalTxSubmission)
-import qualified Ouroboros.Network.Protocol.LocalTxSubmission.Type as LocalTxSubmission
-import           Ouroboros.Network.Protocol.LocalTxSubmission.Codec (codecLocalTxSubmission)
-import qualified Ouroboros.Network.Protocol.LocalTxSubmission.Test as LocalTxSubmission
-import           Ouroboros.Network.Protocol.LocalStateQuery.Type (LocalStateQuery)
-import qualified Ouroboros.Network.Protocol.LocalStateQuery.Type as LocalStateQuery
-import qualified Ouroboros.Network.Protocol.LocalStateQuery.Test as LocalStateQuery
-import qualified Ouroboros.Network.Protocol.Trans.Hello.Type as Hello
 
 import           Test.QuickCheck
 import           Test.QuickCheck.Instances.ByteString ()
-import           Test.Tasty (defaultMain, TestTree, testGroup, adjustOption)
-import           Test.Tasty.QuickCheck (testProperty, QuickCheckMaxSize(..))
+import           Test.Tasty (TestTree, adjustOption, defaultMain, testGroup)
 import           Test.Tasty.HUnit
+import           Test.Tasty.QuickCheck (QuickCheckMaxSize (..), testProperty)
 
 
 -- | The main program, it requires both
@@ -114,6 +126,7 @@ tests CDDLSpecs { cddlChainSync
                 , cddlBlockFetch
                 , cddlTxSubmission
                 , cddlLocalTxSubmission
+                , cddlLocalTxMonitor
                 , cddlTxSubmission2
                 , cddlKeepAlive
                 , cddlLocalStateQuery
@@ -142,6 +155,8 @@ tests CDDLSpecs { cddlChainSync
                                                cddlKeepAlive)
       , testProperty "LocalTxSubmission" (prop_encodeLocalTxSubmission
                                                cddlLocalTxSubmission)
+      , testProperty "LocalTxMonitor" (prop_encodeLocalTxMonitor
+                                               cddlLocalTxMonitor)
       , testProperty "LocalStateQuery"   (prop_encodeLocalStateQuery
                                                cddlLocalStateQuery)
       ]
@@ -165,6 +180,8 @@ tests CDDLSpecs { cddlChainSync
                                            cddlKeepAlive)
       , testCase "LocalTxSubmission" (unit_decodeLocalTxSubmission
                                            cddlLocalTxSubmission)
+      , testCase "LocalTxMonitor" (unit_decodeLocalTxMonitor
+                                           cddlLocalTxMonitor)
       , testCase "LocalStateQuery"   (unit_decodeLocalStateQuery
                                            cddlLocalStateQuery)
       ]
@@ -188,6 +205,7 @@ data CDDLSpecs = CDDLSpecs {
     cddlLocalTxSubmission     :: CDDLSpec (LocalTxSubmission
                                              LocalTxSubmission.Tx
                                              LocalTxSubmission.Reject),
+    cddlLocalTxMonitor        :: CDDLSpec (LocalTxMonitor TxId Tx SlotNo),
     cddlLocalStateQuery       :: CDDLSpec (LocalStateQuery
                                              Block (Point Block)
                                              LocalStateQuery.Query)
@@ -208,6 +226,7 @@ readCDDLSpecs = do
     txSubmission2         <- BL.readFile (dir </> "tx-submission2.cddl")
     keepAlive             <- BL.readFile (dir </> "keep-alive.cddl")
     localTxSubmission     <- BL.readFile (dir </> "local-tx-submission.cddl")
+    localTxMonitor        <- BL.readFile (dir </> "local-tx-monitor.cddl")
     localStateQuery       <- BL.readFile (dir </> "local-state-query.cddl")
     -- append common definitions; they must be appended since the first
     -- definition is the entry point for a cddl spec.
@@ -225,6 +244,8 @@ readCDDLSpecs = do
                                             <> common,
         cddlKeepAlive             = CDDLSpec keepAlive,
         cddlLocalTxSubmission     = CDDLSpec $ localTxSubmission
+                                            <> common,
+        cddlLocalTxMonitor        = CDDLSpec $ localTxMonitor
                                             <> common,
         cddlLocalStateQuery       = CDDLSpec $ localStateQuery
                                             <> common
@@ -284,6 +305,15 @@ localTxSubmissionCodec =
       Serialise.decode
       Serialise.encode
       Serialise.decode
+
+
+localTxMonitorCodec :: Codec (LocalTxMonitor TxId Tx SlotNo)
+                                CBOR.DeserialiseFailure IO BL.ByteString
+localTxMonitorCodec =
+    codecLocalTxMonitor
+      Serialise.encode Serialise.decode
+      Serialise.encode Serialise.decode
+      Serialise.encode Serialise.decode
 
 
 localStateQueryCodec :: Codec (LocalStateQuery Block (Point Block) LocalStateQuery.Query)
@@ -488,6 +518,11 @@ prop_encodeLocalTxSubmission
     -> Property
 prop_encodeLocalTxSubmission spec = validateEncoder spec localTxSubmissionCodec
 
+prop_encodeLocalTxMonitor
+    :: CDDLSpec            (LocalTxMonitor TxId Tx SlotNo)
+    -> AnyMessageAndAgency (LocalTxMonitor TxId Tx SlotNo)
+    -> Property
+prop_encodeLocalTxMonitor spec = validateEncoder spec localTxMonitorCodec
 
 prop_encodeLocalStateQuery
     :: CDDLSpec            (LocalStateQuery Block (Point Block) LocalStateQuery.Query)
@@ -689,12 +724,28 @@ unit_decodeKeepAlive spec =
 
 unit_decodeLocalTxSubmission
   :: CDDLSpec (LocalTxSubmission LocalTxSubmission.Tx LocalTxSubmission.Reject)
-    -> Assertion
+  -> Assertion
 unit_decodeLocalTxSubmission spec =
     validateDecoder Nothing
       spec localTxSubmissionCodec
       [ SomeAgency $ ClientAgency LocalTxSubmission.TokIdle
       , SomeAgency $ ServerAgency LocalTxSubmission.TokBusy
+      ]
+      100
+
+
+unit_decodeLocalTxMonitor
+  :: CDDLSpec (LocalTxMonitor TxId Tx SlotNo)
+  -> Assertion
+unit_decodeLocalTxMonitor spec =
+    validateDecoder Nothing
+      spec localTxMonitorCodec
+      [ SomeAgency $ ClientAgency LocalTxMonitor.TokIdle
+      , SomeAgency $ ClientAgency LocalTxMonitor.TokAcquired
+      , SomeAgency $ ServerAgency LocalTxMonitor.TokAcquiring
+      , SomeAgency $ ServerAgency (LocalTxMonitor.TokBusy LocalTxMonitor.TokNextTx)
+      , SomeAgency $ ServerAgency (LocalTxMonitor.TokBusy LocalTxMonitor.TokHasTx)
+      , SomeAgency $ ServerAgency (LocalTxMonitor.TokBusy LocalTxMonitor.TokGetSizes)
       ]
       100
 
@@ -742,7 +793,7 @@ txSubmissionFix :: CBOR.Term -> CBOR.Term
 txSubmissionFix term =
     case term of
       TList [TInt tag, TList l] -> TList [TInt tag, TListI l]
-      _ -> term
+      _                         -> term
 
 
 -- | order entries in a dictionary
@@ -757,7 +808,7 @@ handshakeFix term =
                    (\(k, _) -> case k of
                      TInt i     -> (fromIntegral i :: Integer)
                      TInteger i -> (fromIntegral i :: Integer)
-                     _ -> error "orderHandshakeDict: unexpected key")
+                     _          -> error "orderHandshakeDict: unexpected key")
                    l
                  )
           ]

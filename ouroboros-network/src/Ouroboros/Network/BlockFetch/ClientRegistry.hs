@@ -1,38 +1,37 @@
-{-# LANGUAGE NamedFieldPuns             #-}
-{-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE BangPatterns               #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE NamedFieldPuns      #-}
+{-# LANGUAGE RecordWildCards     #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
-module Ouroboros.Network.BlockFetch.ClientRegistry (
-    -- * Registry of block fetch clients
-    FetchClientRegistry,
-    newFetchClientRegistry,
-    bracketFetchClient,
-    bracketKeepAliveClient,
-    bracketSyncWithFetchClient,
-    setFetchClientContext,
-    FetchClientPolicy(..),
-    readFetchClientsStatus,
-    readFetchClientsStateVars,
-    readPeerGSVs,
+module Ouroboros.Network.BlockFetch.ClientRegistry
+  ( -- * Registry of block fetch clients
+    FetchClientRegistry
+  , newFetchClientRegistry
+  , bracketFetchClient
+  , bracketKeepAliveClient
+  , bracketSyncWithFetchClient
+  , setFetchClientContext
+  , FetchClientPolicy (..)
+  , readFetchClientsStatus
+  , readFetchClientsStateVars
+  , readPeerGSVs
   ) where
 
 import           Data.Functor.Contravariant (contramap)
-import qualified Data.Map as Map
 import           Data.Map (Map)
+import qualified Data.Map as Map
 
+import           Control.Exception (assert)
 import           Control.Monad (unless)
+import           Control.Monad.Class.MonadAsync
+import           Control.Monad.Class.MonadFork (MonadFork (throwTo),
+                     MonadThread (ThreadId, myThreadId))
 import           Control.Monad.Class.MonadSTM.Strict
 import           Control.Monad.Class.MonadThrow
-import           Control.Monad.Class.MonadAsync
-import           Control.Monad.Class.MonadFork
-                   ( MonadThread(ThreadId, myThreadId), MonadFork(throwTo) )
-import           Control.Exception (assert)
 import           Control.Tracer (Tracer)
 
-import           Ouroboros.Network.DeltaQ
 import           Ouroboros.Network.BlockFetch.ClientState
+import           Ouroboros.Network.DeltaQ
 
 
 
@@ -69,7 +68,8 @@ newFetchClientRegistry = FetchClientRegistry <$> newEmptyTMVarIO
 -- It also manages synchronisation with the corresponding chain sync client.
 --
 bracketFetchClient :: forall m a peer header block.
-                      (MonadThrow m, MonadSTM m, MonadFork m, Ord peer)
+                      (MonadThrow m, MonadSTM m, MonadFork m, MonadMask m,
+                       Ord peer)
                    => FetchClientRegistry peer header block m
                    -> peer
                    -> (FetchClientContext header block m -> m a)
@@ -117,7 +117,7 @@ bracketFetchClient (FetchClientRegistry ctxVar
                -> (ThreadId m, StrictTMVar m ())
                -> m ()
     unregister ksVar FetchClientContext { fetchClientCtxStateVars = stateVars }
-               (tid, doneVar)  = do
+               (tid, doneVar)  = uninterruptibleMask_ $ do
       -- Signal we are shutting down
       atomically $
         writeTVar (fetchClientStatusVar stateVars) PeerFetchStatusShutdown
@@ -182,7 +182,8 @@ bracketSyncWithFetchClient (FetchClientRegistry _ctxVar
           Map.delete peer m
 
 bracketKeepAliveClient :: forall m a peer header block.
-                              (MonadThrow m, MonadSTM m, MonadFork m, Ord peer)
+                              (MonadThrow m, MonadSTM m, MonadFork m,
+                               MonadMask m, Ord peer)
                        => FetchClientRegistry peer header block m
                        -> peer
                        -> ((StrictTVar  m (Map peer PeerGSV)) -> m a)
@@ -202,7 +203,7 @@ bracketKeepAliveClient(FetchClientRegistry _ctxVar
     -- It is possible for the keepAlive client to keep running even without a fetch client, but
     -- a fetch client shouldn't run without a keepAlive client.
     unregister :: m ()
-    unregister = do
+    unregister = uninterruptibleMask_ $ do
       fetchclient_m <- atomically $ do
         fetchclients <- readTVar keepRegistry
         case Map.lookup peer fetchclients of

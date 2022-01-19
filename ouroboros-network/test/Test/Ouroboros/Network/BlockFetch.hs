@@ -32,7 +32,6 @@ import           Control.Monad.IOSim
 import           Control.Tracer (Tracer (Tracer), contramap, nullTracer)
 
 --TODO: could re-export some of the trace types from more convenient places:
-import           Ouroboros.Network.Driver (TraceSendRecv)
 import           Ouroboros.Network.AnchoredFragment (AnchoredFragment)
 import qualified Ouroboros.Network.AnchoredFragment as AnchoredFragment
 import           Ouroboros.Network.Block
@@ -40,6 +39,7 @@ import           Ouroboros.Network.BlockFetch
 import           Ouroboros.Network.BlockFetch.ClientRegistry
 import           Ouroboros.Network.BlockFetch.ClientState
 import           Ouroboros.Network.BlockFetch.Examples
+import           Ouroboros.Network.Driver (TraceSendRecv)
 import qualified Ouroboros.Network.MockChain.Chain as Chain
 import           Ouroboros.Network.Mux (ControlMessage (..), continueForever)
 import           Ouroboros.Network.Protocol.BlockFetch.Type (BlockFetch)
@@ -547,8 +547,8 @@ _unit_bracketSyncWithFetchClient step = do
     checkResult _                 = assertFailure "unexpected result"
 
     testSkeleton :: forall m a b.
-                    (MonadAsync m, MonadFork m, MonadSTM m, MonadTimer m,
-                     MonadThrow m, MonadThrow (STM m))
+                    (MonadAsync m, MonadFork m, MonadMask m, MonadSTM m,
+                     MonadTimer m, MonadThrow m, MonadThrow (STM m))
                  => ((forall c. m c -> m c) -> m a)
                  -> ((forall c. m c -> m c) -> m b)
                  -> m (Either (Either SomeException a)
@@ -658,7 +658,7 @@ prop_terminate (TestChainFork _commonChain forkChain _forkChain) (Positive (Smal
       -- from 'runPipelinedPeerWithLimits'.
       -- threadDelay 60
       return $ case result of
-        Left _ -> False
+        Left _  -> False
         Right _ -> True
 
     fork'  = chainToAnchoredFragment forkChain

@@ -1,5 +1,3 @@
-{-# LANGUAGE UnicodeSyntax #-}
-{-# LANGUAGE BangPatterns               #-}
 {-# LANGUAGE DataKinds                  #-}
 {-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveGeneric              #-}
@@ -11,10 +9,11 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiWayIf                 #-}
 {-# LANGUAGE NamedFieldPuns             #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE TypeApplications           #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TupleSections              #-}
+{-# LANGUAGE TypeApplications           #-}
+{-# LANGUAGE UnicodeSyntax              #-}
 
 -- 'TestAddress' 'Arbitrary' instance.
 {-# OPTIONS_GHC -Wno-orphans                   #-}
@@ -26,6 +25,8 @@
 module Test.Ouroboros.Network.ConnectionManager
   ( tests
   , verifyAbstractTransition
+  , validTransitionMap
+  , allValidTransitionsNames
   ) where
 
 import           Prelude hiding (read)
@@ -34,8 +35,8 @@ import           Control.Exception (assert)
 import           Control.Monad (forever, unless, when, (>=>))
 import           Control.Monad.Class.MonadAsync
 import           Control.Monad.Class.MonadFork
-import           Control.Monad.Class.MonadSay
 import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadSay
 import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadTime
 import           Control.Monad.Class.MonadTimer
@@ -43,19 +44,19 @@ import           Control.Monad.IOSim
 import           Control.Tracer (Tracer (..), contramap, nullTracer)
 
 import           GHC.Generics
-import           GHC.Stack (HasCallStack)
 import           GHC.IO.Exception
+import           GHC.Stack (HasCallStack)
 
+import           Data.Foldable (forM_, traverse_)
 import           Data.Functor (void, ($>))
-import           Data.Foldable (traverse_, forM_)
 import           Data.List (intercalate, sortOn)
 import           Data.Map (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Monoid (All (..))
 import qualified Data.Text.Lazy as Text
 import           Data.Void (Void)
-import           Text.Pretty.Simple (pShowOpt, defaultOutputOptionsNoColor)
 import           Quiet
+import           Text.Pretty.Simple (defaultOutputOptionsNoColor, pShowOpt)
 
 import           Network.Mux.Types
 
@@ -64,13 +65,13 @@ import           Test.Tasty (TestTree, testGroup)
 import           Test.Tasty.QuickCheck (testProperty)
 
 import           Ouroboros.Network.ConnectionId (ConnectionId (..))
-import           Ouroboros.Network.Snocket (Snocket (..), Accept (..), Accepted (..),
-                   AddressFamily(TestFamily), TestAddress (..))
 import           Ouroboros.Network.ConnectionManager.Core
 import           Ouroboros.Network.ConnectionManager.Types
+import qualified Ouroboros.Network.InboundGovernor.ControlChannel as ControlChannel
 import           Ouroboros.Network.MuxMode
 import           Ouroboros.Network.Server.RateLimiting
-import qualified Ouroboros.Network.InboundGovernor.ControlChannel as ControlChannel
+import           Ouroboros.Network.Snocket (Accept (..), Accepted (..),
+                     AddressFamily (TestFamily), Snocket (..), TestAddress (..))
 
 
 
@@ -216,18 +217,18 @@ newtype Schedule extra = Schedule { getSchedule :: [ScheduleEntry extra] }
 --
 data State = State {
       -- | Time when last connection started.
-      time            :: !Time
+      time           :: !Time
 
-    , dataFlow        :: !(Maybe DataFlow)
+    , dataFlow       :: !(Maybe DataFlow)
 
-    , handshakeUntil  :: !(Maybe Time)
+    , handshakeUntil :: !(Maybe Time)
 
       -- | Time when outbound connection started, when it will terminate and
       -- a boolean value which indicates if it errors or not.
-    , outboundActive  :: !IsActive
+    , outboundActive :: !IsActive
 
       -- | Time when inbound connection started and when it will terminate.
-    , inboundActive   :: !IsActive
+    , inboundActive  :: !IsActive
     }
   deriving Show
 
@@ -647,10 +648,10 @@ mkConnectionHandler snocket =
 -- Consistent type aliases for observed traces.
 --
 
-type TestConnectionState m      = ConnectionState Addr (Handle m) Void Version m
-type TestConnectionManagerTrace = ConnectionManagerTrace Addr ()
-type TestTransitionTrace m      = TransitionTrace  Addr (TestConnectionState m)
-type AbstractTransitionTrace    = TransitionTrace' Addr AbstractState
+type TestConnectionState m       = ConnectionState Addr (Handle m) Void Version m
+type TestConnectionManagerTrace  = ConnectionManagerTrace Addr ()
+type TestTransitionTrace m       = TransitionTrace  Addr (TestConnectionState m)
+type TestAbstractTransitionTrace = AbstractTransitionTrace Addr
 
 
 verifyAbstractTransition :: AbstractTransition
@@ -735,7 +736,7 @@ verifyAbstractTransition Transition { fromState, toState } =
       -- OutboundIdleSt
       --
 
-      (OutboundIdleSt dataFlow, InboundSt dataFlow') -> dataFlow == dataFlow'
+      (OutboundIdleSt Duplex, InboundSt Duplex) -> True
       (OutboundIdleSt _dataFlow, TerminatingSt) -> True
 
       --
@@ -759,6 +760,103 @@ verifyAbstractTransition Transition { fromState, toState } =
 
       _ -> False
 
+-- | Maps each valid transition into one number. Collapses all invalid transition into a
+-- single number.
+--
+-- NOTE: Should be in sync with 'verifyAbstractTransition'
+--
+validTransitionMap :: AbstractTransition
+                   -> (Int, String)
+validTransitionMap t@Transition { fromState, toState } =
+    case (fromState, toState) of
+      (TerminatedSt            , ReservedOutboundSt)                -> (01, show t)
+      (UnknownConnectionSt     , ReservedOutboundSt)                -> (02, show t)
+      (ReservedOutboundSt      , UnnegotiatedSt Outbound)           -> (03, show t)
+      (UnnegotiatedSt Outbound , OutboundUniSt)                     -> (04, show t)
+      (UnnegotiatedSt Outbound , OutboundDupSt Ticking)             -> (05, show t)
+      (OutboundUniSt           , OutboundIdleSt Unidirectional)     -> (06, show t)
+      (OutboundDupSt Ticking   , OutboundDupSt Expired)             -> (07, show t)
+      (OutboundDupSt Expired   , OutboundIdleSt Duplex)             -> (08, show t)
+      (OutboundIdleSt dataFlow , OutboundIdleSt dataFlow')
+        | dataFlow == dataFlow'                                     -> (09, show t)
+      (OutboundDupSt Ticking   , InboundIdleSt Duplex)              -> (10, show t)
+      (InboundIdleSt Duplex    , OutboundDupSt Ticking)             -> (11, show t)
+      (OutboundDupSt Ticking   , DuplexSt)                          -> (12, show t)
+      (OutboundDupSt Expired   , DuplexSt)                          -> (13, show t)
+      (OutboundDupSt expired   , OutboundDupSt expired')
+        | expired == expired'                                       -> (14, show t)
+      (InboundSt Duplex             , DuplexSt)                     -> (15, show t)
+      (DuplexSt                     , OutboundDupSt Ticking)        -> (16, show t)
+      (DuplexSt                     , InboundSt Duplex)             -> (17, show t)
+      (TerminatedSt                 , UnnegotiatedSt Inbound)       -> (18, show t)
+      (UnknownConnectionSt          , UnnegotiatedSt Inbound)       -> (19, show t)
+      (ReservedOutboundSt           , UnnegotiatedSt Inbound)       -> (20, show t)
+      (UnnegotiatedSt Inbound       , InboundIdleSt Duplex)         -> (21, show t)
+      (UnnegotiatedSt Inbound       , InboundIdleSt Unidirectional) -> (22, show t)
+      (InboundIdleSt Duplex         , InboundIdleSt Duplex)         -> (23, show t)
+      (InboundIdleSt Duplex         , InboundSt Duplex)             -> (24, show t)
+      (InboundIdleSt Duplex         , TerminatingSt)                -> (25, show t)
+      (InboundSt Duplex             , InboundIdleSt Duplex)         -> (26, show t)
+      (InboundIdleSt Unidirectional , InboundSt Unidirectional)     -> (27, show t)
+      (InboundIdleSt Unidirectional , TerminatingSt)                -> (28, show t)
+      (InboundSt Unidirectional     , InboundIdleSt Unidirectional) -> (29, show t)
+      (OutboundIdleSt Duplex        , InboundSt Duplex)             -> (30, show t)
+      (OutboundIdleSt _dataFlow , TerminatingSt)                    -> (31, show t)
+      (TerminatingSt            , TerminatedSt)                     -> (32, show t)
+      (_                        , TerminatedSt)                     -> (33, show t)
+      (_                        , UnknownConnectionSt)              -> (34, show t)
+      (TerminatingSt            , UnnegotiatedSt Inbound)           -> (35, show t)
+      _                                                             -> (99, show t)
+
+-- | List of all valid transition's names.
+--
+-- NOTE: Should be in sync with 'verifyAbstractTransition', but due to #3516
+-- abrupt terminating transitions and identity transitions are trimmed for now,
+-- until we tweak the generators to include more connection errors.
+--
+allValidTransitionsNames :: [String]
+allValidTransitionsNames =
+  map show
+  [ Transition UnknownConnectionSt             ReservedOutboundSt
+  -- , Transition TerminatedSt                    ReservedOutboundSt
+  , Transition ReservedOutboundSt              (UnnegotiatedSt Outbound)
+  , Transition (UnnegotiatedSt Outbound)       OutboundUniSt
+  , Transition (UnnegotiatedSt Outbound)       (OutboundDupSt Ticking)
+  , Transition OutboundUniSt                   (OutboundIdleSt Unidirectional)
+  , Transition (OutboundDupSt Ticking)         (OutboundDupSt Expired)
+  -- , Transition (OutboundDupSt Expired)         (OutboundIdleSt Duplex)
+  -- , Transition (OutboundIdleSt Unidirectional) (OutboundIdleSt Unidirectional)
+  -- , Transition (OutboundIdleSt Duplex)         (OutboundIdleSt Duplex)
+  , Transition (OutboundDupSt Ticking)         (InboundIdleSt Duplex)
+  , Transition (InboundIdleSt Duplex)          (OutboundDupSt Ticking)
+  , Transition (OutboundDupSt Ticking)         DuplexSt
+  -- , Transition (OutboundDupSt Expired)         DuplexSt
+  -- , Transition (OutboundDupSt Ticking)         (OutboundDupSt Ticking)
+  -- , Transition (OutboundDupSt Expired)         (OutboundDupSt Expired)
+  , Transition (InboundSt Duplex)              DuplexSt
+  , Transition DuplexSt                        (OutboundDupSt Ticking)
+  , Transition DuplexSt                        (InboundSt Duplex)
+  -- , Transition TerminatedSt                    (UnnegotiatedSt Inbound)
+  , Transition UnknownConnectionSt             (UnnegotiatedSt Inbound)
+  , Transition ReservedOutboundSt              (UnnegotiatedSt Inbound)
+  , Transition (UnnegotiatedSt Inbound)        (InboundIdleSt Duplex)
+  , Transition (UnnegotiatedSt Inbound)        (InboundIdleSt Unidirectional)
+  -- , Transition (InboundIdleSt Duplex)          (InboundIdleSt Duplex)
+  , Transition (InboundIdleSt Duplex)          (InboundSt Duplex)
+  -- , Transition (InboundIdleSt Duplex)          TerminatingSt
+  -- , Transition (InboundSt Duplex)              (InboundIdleSt Duplex)
+  -- , Transition (InboundIdleSt Unidirectional)  (InboundSt Unidirectional)
+  -- , Transition (InboundIdleSt Unidirectional)  TerminatingSt
+  -- , Transition (InboundSt Unidirectional)      (InboundIdleSt Unidirectional)
+  -- , Transition (OutboundIdleSt Duplex)         (InboundSt Duplex)
+  -- , Transition (OutboundIdleSt Unidirectional) TerminatingSt
+  -- , Transition (OutboundIdleSt Duplex)         TerminatingSt
+  , Transition TerminatingSt                   TerminatedSt
+  -- , Transition TerminatedSt                    UnknownConnectionSt
+  -- , Transition TerminatingSt                   (UnnegotiatedSt Inbound)
+  -- , Transition (_)                             (TerminatedSt)
+  -- , Transition (_)                             (UnknownConnectionSt)
+  ]
 
 newtype SkewedBool = SkewedBool Bool
   deriving Show
@@ -814,7 +912,7 @@ prop_valid_transitions (SkewedBool bindToLocalAddress) scheduleMap =
         Left failure ->
           counterexample (displayException failure) False
         Right _ ->
-          let cmTrace :: [AbstractTransitionTrace]
+          let cmTrace :: [TestAbstractTransitionTrace]
               cmTrace = selectTraceEventsDynamic tr
 
           in counterexample ("\nTransition Trace\n" ++ (intercalate "\n" . map show $ cmTrace))
@@ -825,7 +923,7 @@ prop_valid_transitions (SkewedBool bindToLocalAddress) scheduleMap =
                   then Just (TestAddress 0)
                   else Nothing
 
-    verifyTrace :: [AbstractTransitionTrace] -> Property
+    verifyTrace :: [TestAbstractTransitionTrace] -> Property
     verifyTrace = conjoin
                 . fmap (verifyTransitionProp . ttTransition)
       where

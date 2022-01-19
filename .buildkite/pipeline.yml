@@ -1,5 +1,0 @@
-steps:
-  - label: 'Check Stylish Haskell'
-    command: 'nix-shell --run scripts/buildkite/check-stylish.sh'
-    agents:
-      system: x86_64-linux

@@ -29,25 +29,27 @@ module Ouroboros.Network.Diffusion.P2P
   , run
   , Interfaces (..)
   , runM
-
   , NodeToNodePeerConnectionHandle
-  )
-  where
+  , AbstractTransitionTrace
+  , RemoteTransitionTrace
+  ) where
 
 
 import           Control.Applicative (Alternative)
-import qualified Control.Monad.Class.MonadAsync as Async
+import           Control.Exception (IOException)
 import           Control.Monad.Class.MonadAsync (Async, MonadAsync)
+import qualified Control.Monad.Class.MonadAsync as Async
 import           Control.Monad.Class.MonadFork
 import           Control.Monad.Class.MonadSTM.Strict
 import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadTime
 import           Control.Monad.Class.MonadTimer
-import           Control.Exception (IOException)
-import           Control.Tracer (Tracer, nullTracer, traceWith)
+import           Control.Tracer (Tracer, contramap, nullTracer, traceWith)
+import           Data.ByteString.Lazy (ByteString)
 import           Data.Foldable (asum)
 import           Data.IP (IP)
 import qualified Data.IP as IP
+import           Data.Kind (Type)
 import           Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Map (Map)
@@ -55,101 +57,67 @@ import           Data.Maybe (catMaybes, maybeToList)
 import           Data.Set (Set)
 import           Data.Typeable (Typeable)
 import           Data.Void (Void)
-import           Data.ByteString.Lazy (ByteString)
-import           Data.Kind (Type)
 import           System.Random (StdGen, newStdGen, split)
 #ifdef POSIX
 import qualified System.Posix.Signals as Signals
 #endif
 
-import           Network.Mux
-                  ( MiniProtocolBundle (..)
-                  , MiniProtocolInfo (..)
-                  , MiniProtocolDirection (..)
-                  )
 import qualified Network.DNS as DNS
+import           Network.Mux (MiniProtocolBundle (..),
+                     MiniProtocolDirection (..), MiniProtocolInfo (..))
 import           Network.Socket (Socket)
 import qualified Network.Socket as Socket
 
-import           Ouroboros.Network.Snocket
-                  ( LocalAddress
-                  , LocalSnocket
-                  , LocalSocket (..)
-                  , FileDescriptor
-                  , Snocket
-                  , SocketSnocket
-                  , localSocketFileDescriptor
-                  )
+import           Ouroboros.Network.Snocket (FileDescriptor, LocalAddress,
+                     LocalSnocket, LocalSocket (..), Snocket, SocketSnocket,
+                     localSocketFileDescriptor)
 import qualified Ouroboros.Network.Snocket as Snocket
 
-import           Ouroboros.Network.ConnectionId
 import           Ouroboros.Network.BlockFetch
+import           Ouroboros.Network.ConnectionId
 import           Ouroboros.Network.Protocol.Handshake
-import           Ouroboros.Network.Protocol.Handshake.Version
 import           Ouroboros.Network.Protocol.Handshake.Codec
+import           Ouroboros.Network.Protocol.Handshake.Version
 
-import           Ouroboros.Network.ConnectionManager.Types
-import           Ouroboros.Network.ConnectionManager.Core
 import           Ouroboros.Network.ConnectionHandler
-import           Ouroboros.Network.RethrowPolicy
+import           Ouroboros.Network.ConnectionManager.Core
+import           Ouroboros.Network.ConnectionManager.Types
+import           Ouroboros.Network.Diffusion.Common hiding (nullTracers)
 import qualified Ouroboros.Network.Diffusion.Policies as Diffusion.Policies
 import           Ouroboros.Network.IOManager
-import           Ouroboros.Network.InboundGovernor (InboundGovernorTrace (..))
-import           Ouroboros.Network.PeerSelection.PeerMetric (PeerMetrics (..))
-import           Ouroboros.Network.PeerSelection.RootPeersDNS
-                  ( resolveDomainAccessPoint
-                  , DNSActions
-                  , ioDNSActions
-                  , LookupReqs (..)
-                  , DomainAccessPoint
-                  , RelayAccessPoint(..)
-                  , TraceLocalRootPeers(..)
-                  , TracePublicRootPeers(..)
-                  )
-import qualified Ouroboros.Network.PeerSelection.Governor as Governor
-import           Ouroboros.Network.PeerSelection.Governor.Types
-                  ( TracePeerSelection (..)
-                  , DebugPeerSelection (..)
-                  , PeerSelectionCounters (..)
-                  , ChurnMode (ChurnModeNormal)
-                  )
-import           Ouroboros.Network.PeerSelection.LedgerPeers
-                  ( UseLedgerAfter (..)
-                  , withLedgerPeers
-                  )
-import           Ouroboros.Network.PeerSelection.PeerStateActions
-                  ( PeerSelectionActionsTrace (..)
-                  , PeerStateActionsArguments (..)
-                  , PeerConnectionHandle
-                  , withPeerStateActions
-                  )
-import           Ouroboros.Network.PeerSelection.Simple
-import           Ouroboros.Network.Server2
-                  ( ServerArguments (..)
-                  , ServerTrace (..)
-                  )
-import qualified Ouroboros.Network.Server2 as Server
+import           Ouroboros.Network.InboundGovernor (InboundGovernorTrace (..),
+                     RemoteTransitionTrace)
 import           Ouroboros.Network.Mux hiding (MiniProtocol (..))
 import           Ouroboros.Network.MuxMode
-import           Ouroboros.Network.NodeToClient
-                  ( NodeToClientVersion (..)
-                  , NodeToClientVersionData
-                  )
+import           Ouroboros.Network.NodeToClient (NodeToClientVersion (..),
+                     NodeToClientVersionData)
 import qualified Ouroboros.Network.NodeToClient as NodeToClient
-import           Ouroboros.Network.NodeToNode
-                  ( MiniProtocolParameters (..)
-                  , NodeToNodeVersion (..)
-                  , NodeToNodeVersionData (..)
-                  , AcceptedConnectionsLimit (..)
-                  , DiffusionMode (..)
-                  , RemoteAddress
-                  , chainSyncProtocolLimits
-                  , blockFetchProtocolLimits
-                  , txSubmissionProtocolLimits
-                  , keepAliveProtocolLimits
-                  )
-import qualified Ouroboros.Network.NodeToNode   as NodeToNode
-import           Ouroboros.Network.Diffusion.Common hiding (nullTracers)
+import           Ouroboros.Network.NodeToNode (AcceptedConnectionsLimit (..),
+                     DiffusionMode (..), MiniProtocolParameters (..),
+                     NodeToNodeVersion (..), NodeToNodeVersionData (..),
+                     RemoteAddress, blockFetchProtocolLimits,
+                     chainSyncProtocolLimits, keepAliveProtocolLimits,
+                     txSubmissionProtocolLimits)
+import qualified Ouroboros.Network.NodeToNode as NodeToNode
+import qualified Ouroboros.Network.PeerSelection.Governor as Governor
+import           Ouroboros.Network.PeerSelection.Governor.Types
+                     (ChurnMode (ChurnModeNormal), DebugPeerSelection (..),
+                     PeerSelectionCounters (..), TracePeerSelection (..))
+import           Ouroboros.Network.PeerSelection.LedgerPeers
+                     (UseLedgerAfter (..), withLedgerPeers)
+import           Ouroboros.Network.PeerSelection.PeerMetric (PeerMetrics (..))
+import           Ouroboros.Network.PeerSelection.PeerStateActions
+                     (PeerConnectionHandle, PeerSelectionActionsTrace (..),
+                     PeerStateActionsArguments (..), withPeerStateActions)
+import           Ouroboros.Network.PeerSelection.RootPeersDNS (DNSActions,
+                     DomainAccessPoint, LookupReqs (..), RelayAccessPoint (..),
+                     TraceLocalRootPeers (..), TracePublicRootPeers (..),
+                     ioDNSActions, resolveDomainAccessPoint)
+import           Ouroboros.Network.PeerSelection.Simple
+import           Ouroboros.Network.RethrowPolicy
+import           Ouroboros.Network.Server2 (ServerArguments (..),
+                     ServerTrace (..))
+import qualified Ouroboros.Network.Server2 as Server
 
 -- | P2P DiffusionTracers Extras
 --
@@ -197,11 +165,17 @@ data TracersExtra ntnAddr ntnVersion ntnVersionData
                          ntnVersion
                          ntnVersionData))
 
+    , dtConnectionManagerTransitionTracer
+        :: Tracer m (AbstractTransitionTrace ntnAddr)
+
     , dtServerTracer
         :: Tracer m (ServerTrace ntnAddr)
 
     , dtInboundGovernorTracer
         :: Tracer m (InboundGovernorTrace ntnAddr)
+
+    , dtInboundGovernorTransitionTracer
+        :: Tracer m (RemoteTransitionTrace ntnAddr)
 
       --
       -- NodeToClient tracers
@@ -238,8 +212,10 @@ nullTracers =
       , dtTracePeerSelectionCounters                 = nullTracer
       , dtPeerSelectionActionsTracer                 = nullTracer
       , dtConnectionManagerTracer                    = nullTracer
+      , dtConnectionManagerTransitionTracer          = nullTracer
       , dtServerTracer                               = nullTracer
       , dtInboundGovernorTracer                      = nullTracer
+      , dtInboundGovernorTransitionTracer            = nullTracer
       , dtLocalConnectionManagerTracer               = nullTracer
       , dtLocalServerTracer                          = nullTracer
       , dtLocalInboundGovernorTracer                 = nullTracer
@@ -656,8 +632,10 @@ runM Interfaces
        , dtTraceLocalRootPeersTracer
        , dtTracePublicRootPeersTracer
        , dtConnectionManagerTracer
+       , dtConnectionManagerTransitionTracer
        , dtServerTracer
        , dtInboundGovernorTracer
+       , dtInboundGovernorTransitionTracer
        , dtLocalConnectionManagerTracer
        , dtLocalServerTracer
        , dtLocalInboundGovernorTracer
@@ -859,7 +837,9 @@ runM Interfaces
                     connectionManagerArguments =
                       ConnectionManagerArguments {
                           cmTracer              = dtConnectionManagerTracer,
-                          cmTrTracer            = nullTracer, -- TODO
+                          cmTrTracer            =
+                            fmap abstractState
+                            `contramap` dtConnectionManagerTransitionTracer,
                           cmMuxTracer           = dtMuxTracer,
                           cmIPv4Address,
                           cmIPv6Address,
@@ -984,7 +964,9 @@ runM Interfaces
                     connectionManagerArguments =
                       ConnectionManagerArguments {
                           cmTracer              = dtConnectionManagerTracer,
-                          cmTrTracer            = nullTracer, -- TODO
+                          cmTrTracer            =
+                            fmap abstractState
+                            `contramap` dtConnectionManagerTransitionTracer,
                           cmMuxTracer           = dtMuxTracer,
                           cmIPv4Address,
                           cmIPv6Address,
@@ -1089,7 +1071,7 @@ runM Interfaces
                                   serverSockets               = sockets,
                                   serverSnocket               = diNtnSnocket,
                                   serverTracer                = dtServerTracer,
-                                  serverTrTracer              = nullTracer, -- TODO: issue #3320
+                                  serverTrTracer              = dtInboundGovernorTransitionTracer,
                                   serverInboundGovernorTracer = dtInboundGovernorTracer,
                                   serverConnectionLimits      = daAcceptedConnectionsLimit,
                                   serverConnectionManager     = connectionManager,

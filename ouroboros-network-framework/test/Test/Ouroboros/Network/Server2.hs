@@ -1,5 +1,4 @@
 {-# LANGUAGE BangPatterns        #-}
-{-# LANGUAGE ConstraintKinds     #-}
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE ConstraintKinds     #-}
 {-# LANGUAGE DataKinds           #-}
@@ -20,22 +19,18 @@
 
 -- for 'debugTracer'
 {-# OPTIONS_GHC -Wno-redundant-constraints #-}
--- should be reverted once, `prop_multinode_pruning_Sim` is fixed.
-{-# OPTIONS_GHC -Wno-unused-top-binds      #-}
 
-module Test.Ouroboros.Network.Server2
-  ( tests
-  ) where
+module Test.Ouroboros.Network.Server2 (tests) where
 
 import           Control.Exception (AssertionFailed, SomeAsyncException (..))
 import           Control.Monad (replicateM, when, (>=>))
 import           Control.Monad.Class.MonadAsync
-import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadFork
-import           Control.Monad.Class.MonadST    (MonadST)
-import           Control.Monad.Class.MonadSTM.Strict
+import           Control.Monad.Class.MonadST (MonadST)
 import qualified Control.Monad.Class.MonadSTM as LazySTM
+import           Control.Monad.Class.MonadSTM.Strict
 import           Control.Monad.Class.MonadSay
+import           Control.Monad.Class.MonadThrow
 import           Control.Monad.Class.MonadTime
 import           Control.Monad.Class.MonadTimer
 import           Control.Monad.IOSim
@@ -50,14 +45,13 @@ import           Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as LBS
 import           Data.Foldable (foldMap')
 import           Data.Functor (void, ($>), (<&>))
-import           Data.List
-                   (dropWhileEnd, find, mapAccumL, intercalate, (\\), delete,
-                    foldl', nub)
+import           Data.List (delete, dropWhileEnd, find, foldl', intercalate,
+                     mapAccumL, nub, (\\))
 import           Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.Trace as Trace
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import           Data.Maybe (fromMaybe, fromJust, isJust)
+import           Data.Maybe (fromJust, fromMaybe, isJust)
 import           Data.Monoid (Sum (..))
 import           Data.Monoid.Synchronisation (FirstToFinish (..))
 import qualified Data.Set as Set
@@ -69,8 +63,8 @@ import qualified GHC.IO.Exception as IO
 import           Text.Printf
 
 import           Test.QuickCheck
-import           Test.Tasty.QuickCheck
 import           Test.Tasty (TestTree, testGroup)
+import           Test.Tasty.QuickCheck
 
 import           Control.Concurrent.JobPool
 
@@ -81,55 +75,61 @@ import           Network.Mux.Types (MuxRuntimeError)
 import qualified Network.Socket as Socket
 import           Network.TypedProtocol.Core
 
-import           Network.TypedProtocol.ReqResp.Type
-import           Network.TypedProtocol.ReqResp.Codec.CBOR
 import           Network.TypedProtocol.ReqResp.Client
-import           Network.TypedProtocol.ReqResp.Server
+import           Network.TypedProtocol.ReqResp.Codec.CBOR
 import           Network.TypedProtocol.ReqResp.Examples
+import           Network.TypedProtocol.ReqResp.Server
+import           Network.TypedProtocol.ReqResp.Type
 
 import           Ouroboros.Network.Channel (fromChannel)
-import           Ouroboros.Network.ConnectionId
 import           Ouroboros.Network.ConnectionHandler
+import           Ouroboros.Network.ConnectionId
 import           Ouroboros.Network.ConnectionManager.Core
 import           Ouroboros.Network.ConnectionManager.Types
 import qualified Ouroboros.Network.ConnectionManager.Types as CM
 import           Ouroboros.Network.Driver.Limits
 import           Ouroboros.Network.IOManager
 import           Ouroboros.Network.InboundGovernor (InboundGovernorTrace (..),
-                   RemoteSt (..))
+                     RemoteSt (..))
 import qualified Ouroboros.Network.InboundGovernor as IG
 import qualified Ouroboros.Network.InboundGovernor.ControlChannel as Server
 import           Ouroboros.Network.InboundGovernor.State
-                   (InboundGovernorCounters(..))
+                     (InboundGovernorCounters (..))
 import           Ouroboros.Network.Mux
 import           Ouroboros.Network.MuxMode
 import           Ouroboros.Network.Protocol.Handshake
-import           Ouroboros.Network.Protocol.Handshake.Codec ( cborTermVersionDataCodec
-                                                            , noTimeLimitsHandshake
-                                                            , timeLimitsHandshake)
+import           Ouroboros.Network.Protocol.Handshake.Codec
+                     (cborTermVersionDataCodec, noTimeLimitsHandshake,
+                     timeLimitsHandshake)
 import           Ouroboros.Network.Protocol.Handshake.Type (Handshake)
 import           Ouroboros.Network.Protocol.Handshake.Unversioned
 import           Ouroboros.Network.Protocol.Handshake.Version (Acceptable (..))
 import           Ouroboros.Network.RethrowPolicy
-import           Ouroboros.Network.Server.RateLimiting (AcceptedConnectionsLimit (..))
-import           Ouroboros.Network.Server2 (ServerArguments (..), RemoteTransition, RemoteTransitionTrace)
+import           Ouroboros.Network.Server.RateLimiting
+                     (AcceptedConnectionsLimit (..))
+import           Ouroboros.Network.Server2 (RemoteTransition,
+                     RemoteTransitionTrace, ServerArguments (..))
 import qualified Ouroboros.Network.Server2 as Server
-import           Ouroboros.Network.Snocket (Snocket, TestAddress (..), socketSnocket)
+import           Ouroboros.Network.Snocket (Snocket, TestAddress (..),
+                     socketSnocket)
 import qualified Ouroboros.Network.Snocket as Snocket
 
 import           Simulation.Network.Snocket
 
 import           Ouroboros.Network.Testing.Data.AbsBearerInfo
-                   (NonFailingAbsBearerInfoScript(..), AbsBearerInfo (..),
-                    AbsDelay (..), AbsAttenuation (..), AbsSpeed (..),
-                    AbsSDUSize (..), absNoAttenuation,
-                    toNonFailingAbsBearerInfoScript,
-                    AbsBearerInfoScript (..))
+                     (AbsAttenuation (..), AbsBearerInfo (..),
+                     AbsBearerInfoScript (..), AbsDelay (..), AbsSDUSize (..),
+                     AbsSpeed (..), NonFailingAbsBearerInfoScript (..),
+                     absNoAttenuation, toNonFailingAbsBearerInfoScript)
 import           Ouroboros.Network.Testing.Utils (genDelayWithPrecision)
 
-import           Test.Ouroboros.Network.Orphans ()  -- ShowProxy ReqResp instance
+import           Test.Ouroboros.Network.ConnectionManager
+                     (verifyAbstractTransition)
+import           Test.Ouroboros.Network.Orphans ()
 import           Test.Simulation.Network.Snocket hiding (tests)
-import           Test.Ouroboros.Network.ConnectionManager (verifyAbstractTransition)
+import           Test.Ouroboros.Network.ConnectionManager
+                   (validTransitionMap,
+                    allValidTransitionsNames)
 
 tests :: TestTree
 tests =
@@ -148,8 +148,12 @@ tests =
                  prop_connection_manager_valid_transitions
   , testProperty "connection_manager_no_invalid_traces"
                  prop_connection_manager_no_invalid_traces
+  , testProperty "connection_manager_transitions_coverage"
+                 prop_connection_manager_transitions_coverage
   , testProperty "inbound_governor_no_invalid_traces"
                  prop_inbound_governor_no_invalid_traces
+  , testProperty "inbound_governor_transitions_coverage"
+                 prop_inbound_governor_transitions_coverage
   , testProperty "inbound_governor_valid_transitions"
               prop_inbound_governor_valid_transitions
   , testProperty "inbound_governor_no_unsupported_state"
@@ -776,12 +780,12 @@ runInitiatorProtocols
         mux
         (miniProtocolNum ptcl)
         (case singMuxMode of
-          SingInitiatorMode -> Mux.InitiatorDirectionOnly
+          SingInitiatorMode          -> Mux.InitiatorDirectionOnly
           SingInitiatorResponderMode -> Mux.InitiatorDirection)
         Mux.StartEagerly
         (runMuxPeer
           (case miniProtocolRun ptcl of
-            InitiatorProtocolOnly initiator -> initiator
+            InitiatorProtocolOnly initiator           -> initiator
             InitiatorAndResponderProtocol initiator _ -> initiator)
           . fromChannel)
 
@@ -855,7 +859,7 @@ unidirectionalExperiment timeouts snocket socket clientAndServerData = do
                 (\ (r, expected) acc ->
                   case r of
                     Left err -> counterexample (show err) False
-                    Right a -> a === expected .&&. acc)
+                    Right a  -> a === expected .&&. acc)
                 (property True)
                 $ zip rs (expectedResult clientAndServerData clientAndServerData)
 
@@ -1007,7 +1011,7 @@ bidirectionalExperiment
                   (\ (r, expected) acc ->
                     case r of
                       Left err -> counterexample (show err) False
-                      Right a -> a === expected .&&. acc)
+                      Right a  -> a === expected .&&. acc)
                   (property True)
                   (zip rs0 (expectedResult clientAndServerData0 clientAndServerData1))
                 .&&.
@@ -1015,7 +1019,7 @@ bidirectionalExperiment
                   (\ (r, expected) acc ->
                     case r of
                       Left err -> counterexample (show err) False
-                      Right a -> a === expected .&&. acc)
+                      Right a  -> a === expected .&&. acc)
                   (property True)
                   (zip rs1 (expectedResult clientAndServerData1 clientAndServerData0))
                 ))
@@ -1195,7 +1199,7 @@ genAttenuationMap events = do
                 (\ev -> case ev of
                   StartClient _ addr   -> pure addr
                   StartServer _ addr _ -> pure addr
-                  _ -> error "Impossible happened"
+                  _                    -> error "Impossible happened"
                 )
             . filter
                 (\ev -> case ev of
@@ -1231,15 +1235,15 @@ instance (Arbitrary peerAddr, Arbitrary req, Ord peerAddr) =>
       go _ 0 = pure []
       go s@ScriptState{..} n = do
         event <- frequency $
-                    [ (4, StartClient             <$> delay <*> newClient)
-                    , (4, StartServer             <$> delay <*> newServer <*> arbitrary) ] ++
+                    [ (6, StartClient             <$> delay <*> newClient)
+                    , (6, StartServer             <$> delay <*> newServer <*> arbitrary) ] ++
                     [ (4, InboundConnection       <$> delay <*> elements possibleInboundConnections)        | not $ null possibleInboundConnections] ++
                     [ (4, OutboundConnection      <$> delay <*> elements possibleOutboundConnections)       | not $ null possibleOutboundConnections] ++
-                    [ (4, CloseInboundConnection  <$> delay <*> elements inboundConnections)                | not $ null inboundConnections ] ++
+                    [ (6, CloseInboundConnection  <$> delay <*> elements inboundConnections)                | not $ null inboundConnections ] ++
                     [ (4, CloseOutboundConnection <$> delay <*> elements outboundConnections)               | not $ null outboundConnections ] ++
-                    [ (16, InboundMiniprotocols   <$> delay <*> elements inboundConnections  <*> genBundle) | not $ null inboundConnections ] ++
-                    [ (16, OutboundMiniprotocols  <$> delay <*> elements outboundConnections <*> genBundle) | not $ null outboundConnections ] ++
-                    [ (2, ShutdownClientServer    <$> delay <*> elements possibleStoppable)                 | not $ null possibleStoppable ]
+                    [ (10, InboundMiniprotocols   <$> delay <*> elements inboundConnections  <*> genBundle) | not $ null inboundConnections ] ++
+                    [ (8, OutboundMiniprotocols  <$> delay <*> elements outboundConnections <*> genBundle) | not $ null outboundConnections ] ++
+                    [ (4, ShutdownClientServer    <$> delay <*> elements possibleStoppable)                 | not $ null possibleStoppable ]
         (event :) <$> go (nextState event s) (n - 1)
         where
           possibleStoppable  = startedClients ++ startedServers
@@ -2003,6 +2007,57 @@ verifyRemoteTransition Transition {fromState, toState} =
 
 
 
+-- | Maps each valid remote transition into one number. Collapses all invalid
+-- transition into a single number.
+--
+-- NOTE: Should be in sync with 'verifyRemoteTransition'
+--
+validRemoteTransitionMap :: RemoteTransition -> (Int, String)
+validRemoteTransitionMap t@Transition { fromState, toState } =
+    case (fromState, toState) of
+      (Nothing          , Just RemoteIdleSt) -> (00, show t)
+      (Just RemoteIdleSt, Just RemoteEstSt)  -> (01, show t)
+      (Just RemoteColdSt, Just RemoteEstSt)  -> (02, show t)
+      (Just RemoteWarmSt, Just RemoteHotSt)  -> (03, show t)
+      (Just RemoteHotSt , Just RemoteWarmSt) -> (04, show t)
+      (Just RemoteEstSt , Just RemoteIdleSt) -> (05, show t)
+      (Just RemoteIdleSt, Just RemoteColdSt) -> (06, show t)
+      (Just RemoteIdleSt, Nothing)           -> (07, show t)
+      (Just RemoteColdSt, Nothing)           -> (08, show t)
+      (Just RemoteEstSt , Nothing)           -> (09, show t)
+      (Nothing          , Nothing)           -> (10, show t)
+      (Just RemoteWarmSt, Just RemoteWarmSt) -> (11, show t)
+      (Just RemoteIdleSt, Just RemoteIdleSt) -> (12, show t)
+      (Just RemoteColdSt, Just RemoteColdSt) -> (13, show t)
+      (_                , _)                 -> (99, show t)
+
+-- | List of all valid transition's names.
+--
+-- NOTE: Should be in sync with 'verifyAbstractTransition'.
+--
+allValidRemoteTransitionsNames :: [String]
+allValidRemoteTransitionsNames =
+  map show
+  [ Transition Nothing             (Just RemoteIdleSt)
+  , Transition (Just RemoteIdleSt) (Just RemoteWarmSt)
+  -- , Transition (Just RemoteIdleSt) (Just RemoteHotSt)
+  -- , Transition (Just RemoteColdSt) (Just RemoteWarmSt)
+  -- , Transition (Just RemoteColdSt) (Just RemoteHotSt)
+  , Transition (Just RemoteWarmSt) (Just RemoteHotSt)
+  , Transition (Just RemoteHotSt ) (Just RemoteWarmSt)
+  , Transition (Just RemoteWarmSt) (Just RemoteIdleSt)
+  -- , Transition (Just RemoteHotSt)  (Just RemoteIdleSt)
+  , Transition (Just RemoteIdleSt) (Just RemoteColdSt)
+  , Transition (Just RemoteIdleSt) Nothing
+  , Transition (Just RemoteColdSt) Nothing
+  , Transition (Just RemoteWarmSt) Nothing
+  , Transition (Just RemoteHotSt)  Nothing
+  , Transition Nothing             Nothing
+  -- , Transition (Just RemoteWarmSt) (Just RemoteWarmSt)
+  -- , Transition (Just RemoteIdleSt) (Just RemoteIdleSt)
+  -- , Transition (Just RemoteColdSt) (Just RemoteColdSt)
+  ]
+
 data Three a b c
     = First  a
     | Second b
@@ -2136,6 +2191,38 @@ prop_connection_manager_valid_transitions serverAcc (ArbDataFlow dataFlow)
        )
     . splitConns
     $ abstractTransitionEvents
+  where
+    sim :: IOSim s ()
+    sim = multiNodeSim serverAcc dataFlow
+                       defaultBearerInfo
+                       maxAcceptedConnectionsLimit
+                       events
+                       attenuationMap
+
+-- | Property wrapping `multinodeExperiment`.
+--
+-- Note: this test coverage of connection manager state transitions.
+-- TODO: Fix transitions that are not covered. #3516
+prop_connection_manager_transitions_coverage :: Int
+                                             -> ArbDataFlow
+                                             -> AbsBearerInfo
+                                             -> MultiNodeScript Int TestAddr
+                                             -> Property
+prop_connection_manager_transitions_coverage serverAcc
+    (ArbDataFlow dataFlow)
+    defaultBearerInfo
+    (MultiNodeScript events attenuationMap) =
+  let trace = runSimTrace sim
+
+      abstractTransitionEvents :: [AbstractTransitionTrace SimAddr]
+      abstractTransitionEvents = withNameTraceEvents trace
+
+      transitionsSeen = nub [ tran | TransitionTrace _ tran <- abstractTransitionEvents]
+      transitionsSeenNames = map (snd . validTransitionMap) transitionsSeen
+
+   in coverTable "valid transitions" [ (n, 0.01) | n <- allValidTransitionsNames ] $
+      tabulate   "valid transitions" transitionsSeenNames
+      True
   where
     sim :: IOSim s ()
     sim = multiNodeSim serverAcc dataFlow
@@ -2605,6 +2692,42 @@ prop_inbound_governor_no_invalid_traces serverAcc (ArbDataFlow dataFlow)
 
 -- | Property wrapping `multinodeExperiment`.
 --
+-- Note: this test coverage of inbound governor state transitions.
+-- TODO: Fix transitions that are not covered. #3516
+prop_inbound_governor_transitions_coverage :: Int
+                                           -> ArbDataFlow
+                                           -> AbsBearerInfo
+                                           -> MultiNodeScript Int TestAddr
+                                           -> Property
+prop_inbound_governor_transitions_coverage serverAcc
+  (ArbDataFlow dataFlow)
+  defaultBearerInfo
+  (MultiNodeScript events attenuationMap) =
+  let trace = runSimTrace sim
+
+      remoteTransitionTraceEvents :: [RemoteTransitionTrace SimAddr]
+      remoteTransitionTraceEvents = withNameTraceEvents trace
+
+      transitionsSeen = nub [ tran
+                            | TransitionTrace _ tran
+                                <- remoteTransitionTraceEvents]
+      transitionsSeenNames = map (snd . validRemoteTransitionMap)
+                                 transitionsSeen
+
+   in coverTable "valid transitions"
+                  [ (n, 0.01) | n <- allValidRemoteTransitionsNames ] $
+      tabulate   "valid transitions" transitionsSeenNames
+      True
+  where
+    sim :: IOSim s ()
+    sim = multiNodeSim serverAcc dataFlow
+                       defaultBearerInfo
+                       maxAcceptedConnectionsLimit
+                       events
+                       attenuationMap
+
+-- | Property wrapping `multinodeExperiment`.
+--
 -- Note: this test validates the order of inbound governor state changes.
 --
 prop_inbound_governor_valid_transition_order :: Int
@@ -2648,7 +2771,7 @@ prop_inbound_governor_valid_transition_order serverAcc (ArbDataFlow dataFlow)
 
 -- | Check inbound governor counters in `multinodeExperiment`.
 --
--- Note: this test validates inbound governor counters.
+-- Note: this test validates warm and hot inbound governor counters only.
 --
 prop_inbound_governor_counters :: Int
                                -> ArbDataFlow
@@ -2684,7 +2807,9 @@ prop_inbound_governor_counters serverAcc (ArbDataFlow dataFlow)
               $ counterexample
                   ("Upper bound is: " ++ show upperBound
                   ++ "\n But got: " ++ show igc)
-                  (property $ igc <= upperBound)
+                  (    warmPeersRemote igc <= warmPeersRemote upperBound
+                  .&&. hotPeersRemote  igc <= hotPeersRemote  upperBound
+                  )
           _                               ->
             mempty
        )
@@ -2695,7 +2820,7 @@ prop_inbound_governor_counters serverAcc (ArbDataFlow dataFlow)
     bundleToCounters (Bundle hot warm _) =
       let warmRemote = bool 1 0 (null warm)
           hotRemote  = bool 1 0 (null hot)
-       in InboundGovernorCounters warmRemote hotRemote
+       in InboundGovernorCounters 0 0 warmRemote hotRemote
 
     -- We check for starting of miniprotocols that can potentially lead to
     -- inbound governor states of remote warm or remote hot connections. An
@@ -3288,8 +3413,6 @@ data WithName name event = WithName {
     wnEvent :: event
   }
   deriving (Show, Functor)
-
-type AbstractTransitionTrace addr = TransitionTrace' addr AbstractState
 
 traceWithNameTraceEvents :: forall b. Typeable b
                     => SimTrace () -> Trace (SimResult ()) b
