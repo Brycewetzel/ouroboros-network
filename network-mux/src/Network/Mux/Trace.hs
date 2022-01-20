@@ -147,6 +147,7 @@ data MuxTrace =
     | MuxTraceStartedOnDemand !MiniProtocolNum !MiniProtocolDir
     | MuxTraceTerminating !MiniProtocolNum !MiniProtocolDir
     | MuxTraceShutdown
+    | MuxTraceTCPInfo Word Word Word
 
 instance Show MuxTrace where
     show MuxTraceRecvHeaderStart = printf "Bearer Receive Header Start"
@@ -184,4 +185,5 @@ instance Show MuxTrace where
     show (MuxTraceStartedOnDemand mid dir) = printf "Started on demand (%s) in %s" (show mid) (show dir)
     show (MuxTraceTerminating mid dir) = printf "Terminating (%s) in %s" (show mid) (show dir)
     show MuxTraceShutdown = "Mux shutdown"
+    show (MuxTraceTCPInfo rtt rttvar cwnd) = printf "TCPInfo rtt %d rttvar %d cwnd %d" rtt rttvar cwnd
 

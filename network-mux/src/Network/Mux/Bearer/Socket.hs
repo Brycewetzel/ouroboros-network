@@ -31,7 +31,7 @@ import qualified Network.Mux.Trace as Mx
 import qualified Network.Mux.Codec as Mx
 import qualified Network.Mux.Time as Mx
 import qualified Network.Mux.Timeout as Mx
-
+import           Network.Mux.TCPInfo
 
 -- |
 -- Create @'MuxBearer'@ from a socket.
@@ -137,5 +137,9 @@ socketAsMuxBearer sduTimeout tracer sd =
                     throwIO $ Mx.MuxError Mx.MuxSDUWriteTimeout "Mux SDU Timeout"
                Just _ -> do
                    traceWith tracer $ Mx.MuxTraceSendEnd
+                   tcpi <- Socket.getSockOpt sd (Socket.SockOpt (6) (11))
+                   traceWith tracer $ Mx.MuxTraceTCPInfo (fromIntegral $ tcpi_rtt tcpi)
+                       (fromIntegral $ tcpi_rttvar tcpi) (fromIntegral $ tcpi_snd_cwnd tcpi)
+
                    return ts
 
