@@ -48,12 +48,12 @@ module Ouroboros.Consensus.Storage.ImmutableDB.API (
   , streamAfterKnownPoint
   , streamAfterPoint
   , streamAll
-  , streamWithBounds
   , withDB
   ) where
 
 import qualified Codec.CBOR.Read as CBOR
-import           Control.Monad.Except (ExceptT (..), runExceptT, throwError)
+import           Control.Monad.Except (ExceptT (..), lift, runExceptT,
+                     throwError)
 import qualified Data.ByteString.Lazy as Lazy
 import           Data.Either (isRight)
 import           Data.Function (on)
@@ -491,24 +491,10 @@ streamAfterPoint ::
   -> BlockComponent blk b
   -> Point blk
   -> m (Either (MissingBlock blk) (Iterator m blk b))
-streamAfterPoint db registry blockComponent fromPt = do
-    tipPt <- atomically $ getTipPoint db
-    streamWithBounds db registry blockComponent fromPt tipPt
-
--- | Open at iterator with the given point as lower exclusive bound and the
--- second given point as the inclusive upper bound.
---
--- Returns a 'MissingBlock' when the point is not in the ImmutableDB.
-streamWithBounds :: (MonadSTM m, HasHeader blk, HasCallStack)
-  => ImmutableDB m blk
-  -> ResourceRegistry m
-  -> BlockComponent blk b
-  -> Point blk
-  -> Point blk
-  -> m (Either (MissingBlock blk) (Iterator m blk b))
-streamWithBounds db registry blockComponent fromPt toPt = runExceptT $
+streamAfterPoint db registry blockComponent fromPt = runExceptT $ do
+    tipPt <- lift $ atomically $ getTipPoint db
     case (pointToWithOriginRealPoint fromPt,
-          pointToWithOriginRealPoint toPt) of
+          pointToWithOriginRealPoint tipPt) of
 
       (Origin, Origin) ->
         -- Nothing to stream
@@ -518,22 +504,22 @@ streamWithBounds db registry blockComponent fromPt toPt = runExceptT $
         -- Asked to stream after a block while the ImmutableDB is empty
         throwError $ NewerThanTip fromPt' GenesisPoint
 
-      (NotOrigin fromPt', NotOrigin _) | pointSlot fromPt > pointSlot toPt ->
+      (NotOrigin fromPt', NotOrigin _) | pointSlot fromPt > pointSlot tipPt ->
         -- Lower bound is newer than the tip, nothing to stream
-        throwError $ NewerThanTip fromPt' toPt
+        throwError $ NewerThanTip fromPt' tipPt
 
-      (NotOrigin fromPt', NotOrigin toPt') | fromPt' == toPt' ->
+      (NotOrigin fromPt', NotOrigin tipPt') | fromPt' == tipPt' ->
         -- Nothing to stream after the tip
         return emptyIterator
 
-      (_, NotOrigin toPt') ->
+      (_, NotOrigin tipPt') ->
         -- Stream from the given point to the current tip (not genesis)
         ExceptT $ stream
           db
           registry
           blockComponent
           (StreamFromExclusive fromPt)
-          (StreamToInclusive toPt')
+          (StreamToInclusive tipPt')
 
 -- | Variant of 'streamAfterPoint' that throws a 'MissingBlockError' when the
 -- point is not in the ImmutableDB (or genesis).

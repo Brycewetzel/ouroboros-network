@@ -278,21 +278,20 @@ initFromDisk
   -> m (LedgerDB' blk, Word64, OnDiskLedgerStDb m (ExtLedgerState blk) blk)
 initFromDisk args replayTracer immutableDB = wrapFailure (Proxy @blk) $ do
     onDiskLedgerStDb <- LedgerDB.mkOnDiskLedgerStDb lgrHasFSLedgerSt
-    -- TODO: is it correct that we pick a instance of the 'OnDiskLedgerStDb' here?
+
+    let oldLedgerInitParams = LedgerDB.OldLedgerInitParams hasFS decodeExtLedgerState'
+        newLedgerInitParams = LedgerDB.NewLedgerInitParams lgrHasFSLedgerSt decodeExtLedgerState' onDiskLedgerStDb
+
     (_initLog, db, replayed) <-
       LedgerDB.initLedgerDB
         replayTracer
         lgrTracer
-        hasFS
-        decodeExtLedgerState'
-        lgrHasFSLedgerSt
-        onDiskLedgerStDb
-        decodeExtLedgerState'
+        oldLedgerInitParams
+        newLedgerInitParams
         decode
         (configLedgerDb lgrTopLevelConfig)
         lgrGenesis
         (streamAPI immutableDB)
-        True
     return (db, replayed, onDiskLedgerStDb)
   where
     LgrDbArgs { lgrHasFS = hasFS, .. } = args
@@ -464,7 +463,7 @@ streamAPI ::
      forall m blk.
      (IOLike m, HasHeader blk)
   => ImmutableDB m blk -> StreamAPI m blk
-streamAPI immutableDB = StreamAPI streamAfter streamAfterUpTo
+streamAPI immutableDB = StreamAPI streamAfter
   where
     streamAfter :: HasCallStack
                 => Point blk
@@ -486,22 +485,6 @@ streamAPI immutableDB = StreamAPI streamAfter streamAfterUpTo
     streamUsing itr = ImmutableDB.iteratorNext itr >>= \case
       ImmutableDB.IteratorExhausted  -> return $ NoMoreBlocks
       ImmutableDB.IteratorResult blk -> return $ NextBlock blk
-
-    streamAfterUpTo :: HasCallStack
-                => Point blk
-                -> Point blk
-                -> (Either (RealPoint blk) (m (NextBlock blk)) -> m a)
-                -> m a
-    streamAfterUpTo from to k = withRegistry $ \registry -> do
-      eItr <- ImmutableDB.streamWithBounds
-                immutableDB
-                registry
-                GetBlock
-                from
-                to
-      case eItr of
-        Left err  -> k $ Left $ ImmutableDB.missingBlockPoint err
-        Right itr -> k $ Right $ streamUsing itr
 
 {-------------------------------------------------------------------------------
   Previously applied blocks
