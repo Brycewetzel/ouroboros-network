@@ -537,7 +537,7 @@ initStartingWith tracer cfg onDiskLedgerDbSt streamAPI initDb = do
                        (ledgerState (ledgerDbCurrent db''))
 
         traceWith tracer (ReplayedBlock (blockRealPoint blk) events)
-        return $ Just (maybeSwitch db'' (blockSlot blk), replayed')
+        return $ Just (maybeSwitch db'', replayed')
 
 {-------------------------------------------------------------------------------
   Write to disk
@@ -683,6 +683,9 @@ listSnapshots (SomeHasFS HasFS{..}) =
     aux :: Set String -> [DiskSnapshot]
     aux = List.sortOn (Down . dsNumber) . mapMaybe snapshotFromPath . Set.toList
 
+-- | Only one new-style snapshot should exist on the system. This functions
+-- returns it or returns Nothing. If multiple snapshots are found, it will
+-- return the one with the highest number (as it is expected to be the newest).
 findNewSnapshot :: Monad m => SomeHasFS m -> m (Maybe DiskSnapshot)
 findNewSnapshot (SomeHasFS HasFS{..}) = do
     ls <- listDirectory (mkFsPath [])

@@ -155,20 +155,38 @@ import           Ouroboros.Consensus.Util.Versioned
 --
 -- > L3 |> []
 data LedgerDB (l :: LedgerStateKind) = LedgerDB {
-      -- | Ledger states
+      -- | Old-style LedgerDB
       ledgerDbCheckpoints :: AnchoredSeq
                                (WithOrigin SlotNo)
                                (Checkpoint (l ValuesMK))
                                (Checkpoint (l ValuesMK))
+      -- | New-style LedgerDB
     , ledgerDbChangelog   :: DbChangelog l
+      -- | Whether we want to apply blocks to both databases or just to one.
     , runDual             :: RunMode
     }
   deriving (Generic)
 
-maybeSwitch :: LedgerDB l -> SlotNo -> LedgerDB l
-maybeSwitch l@LedgerDB{runDual = RunBoth} _ = l
-maybeSwitch l@LedgerDB{runDual = RunOld p} p' = if p' > p then l { runDual = RunBoth } else l
-maybeSwitch l@LedgerDB{runDual = RunNew p} p' = if p' > p then l { runDual = RunBoth } else l
+-- | As we sometimes need to run only one of the LedgerDBs, this datatype models
+-- the fact that we might want to run one database up to a specified slot.
+data RunMode = RunOld SlotNo | RunNew SlotNo | RunBoth
+  deriving (Eq, NoThunks, Generic)
+
+-- | In order to not expose the internals of the LedgerDB, this function allows
+-- to switch to running both databases when the goal slot is reached.
+maybeSwitch
+  :: (GetTip (l EmptyMK), GetTip (l ValuesMK))
+  => LedgerDB l
+  -> LedgerDB l
+maybeSwitch l@LedgerDB{runDual = RunBoth} = l
+maybeSwitch l@LedgerDB{runDual = RunOld p} = do
+  if pointSlot (getTip $ ledgerDbCurrentOld l) > At p
+    then l { runDual = RunBoth }
+    else l
+maybeSwitch l@LedgerDB{runDual = RunNew p} = do
+  if pointSlot (getTip $ ledgerDbCurrent l) > At p
+    then l { runDual = RunBoth }
+    else l
 
 type OldLedgerDB l = AnchoredSeq (WithOrigin SlotNo) (Checkpoint (l ValuesMK)) (Checkpoint (l ValuesMK))
 type NewLedgerDB l = DbChangelog l
@@ -208,13 +226,20 @@ ledgerDbWithAnchor anchor = LedgerDB {
     , runDual = RunBoth
     }
 
-oldLedgerDbWithAnchor :: GetTip (l ValuesMK) => l ValuesMK -> OldLedgerDB l
-oldLedgerDbWithAnchor anchor = Empty (Checkpoint anchor)
+-- | Old LedgerDB starting at the given ledger state
+oldLedgerDbWithAnchor
+  :: GetTip (l ValuesMK)
+  => l ValuesMK
+  -> OldLedgerDB l
+oldLedgerDbWithAnchor = Empty . Checkpoint
 
--- | Both databases are already in sync, just combine them in the @LedgerDB@ datatype.
-combineLedgerDBs :: forall l. (GetTip (l ValuesMK), GetTip (l EmptyMK)) => OldLedgerDB l -- ^ The old-style database
-                 -> NewLedgerDB l -- ^ The new-style database
-                 -> LedgerDB l
+-- | Combine both databases, computing which one should be run if they are out
+-- of sync.
+combineLedgerDBs
+  :: (GetTip (l ValuesMK), GetTip (l EmptyMK))
+  => OldLedgerDB l
+  -> NewLedgerDB l
+  -> LedgerDB l
 combineLedgerDBs ledgerDbCheckpoints ledgerDbChangelog =
   let oldTip = pointSlot . getTip . either unCheckpoint unCheckpoint . AS.head $ ledgerDbCheckpoints
       newTip = pointSlot . getTip . seqLast . dbChangelogStates $ ledgerDbChangelog
@@ -336,8 +361,6 @@ toRealPoint (ReapplyRef rp)  = rp
 toRealPoint (ApplyRef rp)    = rp
 toRealPoint (Weaken ap)      = toRealPoint ap
 
-data RunMode = RunOld SlotNo | RunNew SlotNo | RunBoth deriving (Eq, NoThunks, Generic)
-
 -- | Apply block to the current ledger state
 --
 -- We take in the entire 'LedgerDB' because we record that as part of errors.
@@ -353,39 +376,37 @@ applyBlock cfg ap db pushOld pushNew = case ap of
     Weaken ap' ->
         applyBlock cfg ap' db pushOld pushNew
     _ -> case runDual db of
-      RunOld _  -> do
+      RunOld _ -> do
         old <- oldApplyBlock ap
         case ledgerDbPastDiffs (castPoint @(l ValuesMK) @blk $ getTip old) db of
-          Nothing -> error "New database doesn't have point resulting frome executing old database"
-          Just past -> assert (old == applyDiffs oldLedgerDbCurrent past) $ return $ pushOld old db
+          Nothing   -> error "New database doesn't have point resulting frome executing old database"
+          Just past -> assert (old == applyDiffs (ledgerDbCurrentOld db) past) $ return $ pushOld old db
       RunNew _ -> do
         new <- newApplyBlock ap
         case ledgerDbPastOld (getTip new) db of
-          Nothing -> error "Old database doesn't have point resulting frome executing new database"
-          Just past -> assert (oldLedgerDbCurrent == applyDiffs past (trackingTablesToDiffs new)) $ return $ pushNew new db
-      RunBoth -> do
+          Nothing   -> error "Old database doesn't have point resulting frome executing new database"
+          Just past -> assert (past == applyDiffs (ledgerDbCurrentOld db) (trackingTablesToDiffs new)) $ return $ pushNew new db
+      RunBoth  -> do
         old <- oldApplyBlock ap
         new <- newApplyBlock ap
-        assert (old == applyDiffs oldLedgerDbCurrent (trackingTablesToDiffs new)) $ return $ pushNew new $ pushOld old db
+        assert (old == applyDiffs (ledgerDbCurrentOld db) (trackingTablesToDiffs new)) $ return $ pushNew new $ pushOld old db
 
   where
 
-    oldLedgerDbCurrent :: l ValuesMK
-    oldLedgerDbCurrent = either unCheckpoint unCheckpoint . AS.head . ledgerDbCheckpoints $ db
-
     oldApplyBlock :: Ap m l blk c -> m (l ValuesMK)
     oldApplyBlock = \case
-      ReapplyVal b -> return $ forgetLedgerStateTracking $ tickThenReapply cfg b oldLedgerDbCurrent
+      ReapplyVal b -> return $ forgetLedgerStateTracking $ tickThenReapply cfg b $ ledgerDbCurrentOld db
 
       ApplyVal b -> forgetLedgerStateTracking <$>
                (  either (throwLedgerError db (blockRealPoint b)) return
                 $ runExcept
-                $ tickThenApply cfg b oldLedgerDbCurrent)
+                $ tickThenApply cfg b
+                $ ledgerDbCurrentOld db)
 
       ReapplyRef r  -> do
         b <- resolveBlock r -- TODO: ask: would it make sense to recursively call applyBlock using ReapplyVal?
 
-        return $ forgetLedgerStateTracking $ tickThenReapply cfg b oldLedgerDbCurrent
+        return $ forgetLedgerStateTracking $ tickThenReapply cfg b $ ledgerDbCurrentOld db
 
       ApplyRef r -> do
         b <- resolveBlock r
@@ -393,17 +414,18 @@ applyBlock cfg ap db pushOld pushNew = case ap of
         forgetLedgerStateTracking <$>
              ( either (throwLedgerError db (blockRealPoint b)) return
              $ runExcept
-             $ tickThenApply cfg b oldLedgerDbCurrent)
+             $ tickThenApply cfg b
+             $ ledgerDbCurrentOld db)
 
       -- A value of @Weaken@ will not make it to this point, as @applyBlock@ will recurse until it fully unwraps.
       Weaken _ -> error "unreachable"
 
     newApplyBlock :: Ap m l blk c -> m (l TrackingMK)
     newApplyBlock = \case
-      ReapplyVal b -> withBlockReadSets b (ledgerDbChangelog db) $ \lh ->
+      ReapplyVal b -> withBlockReadSets b $ \lh ->
           return $ tickThenReapply cfg b lh
 
-      ApplyVal b -> withBlockReadSets b (ledgerDbChangelog db) $ \lh ->
+      ApplyVal b -> withBlockReadSets b $ \lh ->
                ( either (throwLedgerError db (blockRealPoint b)) return
                $ runExcept
                $ tickThenApply cfg b lh)
@@ -411,50 +433,50 @@ applyBlock cfg ap db pushOld pushNew = case ap of
       ReapplyRef r  -> do
         b <- resolveBlock r -- TODO: ask: would it make sense to recursively call applyBlock using ReapplyVal?
 
-        withBlockReadSets b (ledgerDbChangelog db) $ \lh ->
+        withBlockReadSets b $ \lh ->
           return $ tickThenReapply cfg b lh
 
       ApplyRef r -> do
         b <- resolveBlock r
 
-        withBlockReadSets b (ledgerDbChangelog db) $ \lh ->
+        withBlockReadSets b $ \lh ->
           either (throwLedgerError db (blockRealPoint b)) return $ runExcept $
              tickThenApply cfg b lh
 
       -- A value of @Weaken@ will not make it to this point, as @applyBlock@ will recurse until it fully unwraps.
       Weaken _ -> error "unreachable"
 
-withBlockReadSets
-  :: forall m blk l. (ApplyBlock l blk, Monad m, TableStuff l, ReadsKeySets m l)
-  => blk
-  -> DbChangelog l
-  -> (l ValuesMK -> m (l TrackingMK))
-  -> m (l TrackingMK)
-withBlockReadSets b db f  = do
-  let ks = getBlockKeySets b :: TableKeySets l
-  let aks = rewindTableKeySets db ks :: RewoundTableKeySets l
-  urs <- readDb aks
-  case withHydratedLedgerState urs of
-    Nothing ->
-      -- We performed the rewind;read;forward sequence in this function. So
-      -- the forward operation should not fail. If this is the case we're in
-      -- the presence of a problem that we cannot deal with at this level,
-      -- so we throw an error.
-      --
-      -- When we introduce pipelining, if the forward operation fails it
-      -- could be because the DB handle was modified by a DB flush that took
-      -- place when __after__ we read the unforwarded keys-set from disk.
-      -- However, performing rewind;read;forward with the same __locked__
-      -- changelog should always succeed.
-      error "Changelog rewind;read;forward sequence failed."
-    Just res -> res
-  where
+    withBlockReadSets
+      :: ReadsKeySets m l
+      => blk
+      -> (l ValuesMK -> m (l TrackingMK))
+      -> m (l TrackingMK)
+    withBlockReadSets b f = do
+      let ks = getBlockKeySets b :: TableKeySets l
+      let aks = rewindTableKeySets (ledgerDbChangelog db) ks :: RewoundTableKeySets l
+      urs <- readDb aks
+      case withHydratedLedgerState urs f of
+        Nothing ->
+          -- We performed the rewind;read;forward sequence in this function. So
+          -- the forward operation should not fail. If this is the case we're in
+          -- the presence of a problem that we cannot deal with at this level,
+          -- so we throw an error.
+          --
+          -- When we introduce pipelining, if the forward operation fails it
+          -- could be because the DB handle was modified by a DB flush that took
+          -- place when __after__ we read the unforwarded keys-set from disk.
+          -- However, performing rewind;read;forward with the same __locked__
+          -- changelog should always succeed.
+          error "Changelog rewind;read;forward sequence failed."
+        Just res -> res
+
     withHydratedLedgerState
       :: UnforwardedReadSets l
-      -> Maybe (m (l TrackingMK))
-    withHydratedLedgerState urs = do
-      rs <- forwardTableKeySets db urs
-      return $ f $ withLedgerTables (seqLast . dbChangelogStates $ db)  rs
+      -> (l ValuesMK -> a)
+      -> Maybe a
+    withHydratedLedgerState urs f = do
+      rs <- forwardTableKeySets (ledgerDbChangelog db) urs
+      return $ f $ withLedgerTables (ledgerDbCurrent db) rs
 
 
 {-------------------------------------------------------------------------------
@@ -563,13 +585,13 @@ defaultReadKeySets f dbReader = runReaderT (runDbReader dbReader) f
 ledgerDbCurrent :: LedgerDB l -> l EmptyMK
 ledgerDbCurrent = seqLast . dbChangelogStates . ledgerDbChangelog
 
+-- | The complete ledger state at the tip of the old-style database
 ledgerDbCurrentOld :: GetTip (l ValuesMK) => LedgerDB l -> l ValuesMK
 ledgerDbCurrentOld = either unCheckpoint unCheckpoint . AS.head . ledgerDbCheckpoints
 
 -- | Information about the state of the ledger at the anchor
 ledgerDbAnchor :: LedgerDB l -> l EmptyMK
 ledgerDbAnchor LedgerDB{..} = seqAt (dbChangelogStateAnchor ledgerDbChangelog) (dbChangelogStates ledgerDbChangelog)
-
 
 -- | All snapshots currently stored by the ledger DB (new to old)
 --
@@ -610,17 +632,31 @@ ledgerDbPast :: (HasHeader blk, IsLedger l, HeaderHash l ~ HeaderHash blk)
   -> Maybe (l EmptyMK)
 ledgerDbPast pt db = ledgerDbCurrent <$> ledgerDbPrefix pt db
 
+-- | Get the Diffs corresponding to the ledger state at the given point.
+--
+-- This should be used to check for agreement between the old and new style
+-- databases when applying a block.
 ledgerDbPastDiffs :: (HasHeader blk, IsLedger l, HeaderHash l ~ HeaderHash blk)
   => Point blk
   -> LedgerDB l
   -> Maybe (l DiffMK)
 ledgerDbPastDiffs pt db = ledgerDbCurrentDiffs <$> ledgerDbPrefix pt db
 
+-- | Extract the Diffs between the last and previous ledger states on the
+-- LedgerDB.
 ledgerDbCurrentDiffs :: LedgerDB l -> l DiffMK
 ledgerDbCurrentDiffs = seqLast . dbChangelogTableDiffs . ledgerDbChangelog
 
+-- | Get a past ledger state
+--
+--  \( O(\log(\min(i,n-i)) \)
+--
+-- When no ledger state (or anchor) has the given 'Point', 'Nothing' is
+-- returned.
 ledgerDbPastOld :: GetTip (l ValuesMK) => Point blk -> LedgerDB l -> Maybe (l ValuesMK)
-ledgerDbPastOld pt db = unCheckpoint <$> listToMaybe (AS.lookupByMeasure (pointSlot pt) (ledgerDbCheckpoints db))
+ledgerDbPastOld pt db =
+      unCheckpoint
+  <$> listToMaybe (AS.lookupByMeasure (pointSlot pt) (ledgerDbCheckpoints db))
 
 -- | Get a prefix of the LedgerDB
 --
@@ -635,12 +671,10 @@ ledgerDbPrefix ::
   -> Maybe (LedgerDB l)
 ledgerDbPrefix pt db
     | pt == (castPoint $ getTip (ledgerDbAnchor db))
-    = Just $ ledgerDbWithAnchor undefined -- (ledgerDbAnchor db) TODO: had to comment this because
-                                          -- now ledgerDbAnchor returns only a
-                                          -- @l EmptyMK@. It is unclear if we
-                                          -- will have to initialize with
-                                          -- @EmptyMK@ or @ValuesMK@. This will
-                                          -- be resolved soon.
+    = let old = Empty . AS.anchor . ledgerDbCheckpoints $ db
+          new = initialDbChangelogWithEmptyState undefined undefined -- TODO: @js fill these
+      in
+        Just $ combineLedgerDBs old new
     | otherwise
     =  do
         checkpoints' <- AS.rollback
