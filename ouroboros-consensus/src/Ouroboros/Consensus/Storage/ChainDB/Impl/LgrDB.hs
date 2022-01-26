@@ -99,6 +99,7 @@ import           Ouroboros.Consensus.Storage.LedgerDB.OnDisk (AnnLedgerError',
                      TraceEvent (..), TraceReplayEvent (..))
 import qualified Ouroboros.Consensus.Storage.LedgerDB.OnDisk as LedgerDB
 
+import           Control.Monad.Trans.Except
 import           Ouroboros.Consensus.Storage.ChainDB.API (ChainDbFailure (..))
 import           Ouroboros.Consensus.Storage.ChainDB.Impl.BlockCache
                      (BlockCache)
@@ -292,6 +293,7 @@ initFromDisk args replayTracer immutableDB = wrapFailure (Proxy @blk) $ do
         (configLedgerDb lgrTopLevelConfig)
         lgrGenesis
         (streamAPI immutableDB)
+        True
     return (db, replayed, onDiskLedgerStDb)
   where
     LgrDbArgs { lgrHasFS = hasFS, .. } = args
@@ -406,9 +408,10 @@ validate :: forall m blk. (IOLike m, LedgerSupportsProtocol blk, HasCallStack)
          -> m (ValidateResult blk)
 validate LgrDB{..} ledgerDB blockCache numRollbacks trace = \hdrs -> do
     aps <- mkAps hdrs <$> atomically (readTVar varPrevApplied)
-    res <- fmap rewrap $
-             LedgerDB.defaultReadKeySets (readKeySets lgrOnDiskLedgerStDb) $
-             LedgerDB.defaultResolveWithErrors (LedgerDB.DbReader . lift . resolveBlock) $
+    res <-
+           fmap rewrap
+           $ LedgerDB.defaultReadKeySets (readKeySets lgrOnDiskLedgerStDb) -- Except e (DbReader m l) a -> ExceptT e m a
+           $ LedgerDB.defaultResolveWithErrors (LedgerDB.DbReader . lift . resolveBlock) $
                LedgerDB.ledgerDbSwitch
                  (configLedgerDb cfg)
                  numRollbacks
@@ -429,7 +432,7 @@ validate LgrDB{..} ledgerDB blockCache numRollbacks trace = \hdrs -> do
           => [Header blk]
           -> Set (RealPoint blk)
           -> [Ap n l blk ( LedgerDB.ResolvesBlocks    n   blk
-                         , LedgerDB.ReadsKeySets         n l
+                         , LedgerDB.ReadsKeySets      n l
                          , LedgerDB.ThrowsLedgerError n l blk
                          )]
     mkAps hdrs prevApplied =
@@ -460,16 +463,16 @@ validate LgrDB{..} ledgerDB blockCache numRollbacks trace = \hdrs -> do
 -------------------------------------------------------------------------------}
 
 streamAPI ::
-     forall m blk.
+     forall m blk e.
      (IOLike m, HasHeader blk)
-  => ImmutableDB m blk -> StreamAPI m blk
+  => ImmutableDB m blk -> StreamAPI m e blk
 streamAPI immutableDB = StreamAPI streamAfter
   where
     streamAfter :: HasCallStack
                 => Point blk
-                -> (Either (RealPoint blk) (m (NextBlock blk)) -> m a)
-                -> m a
-    streamAfter tip k = withRegistry $ \registry -> do
+                -> (Either (RealPoint blk) (m (NextBlock blk)) -> ExceptT e m a)
+                -> ExceptT e m a
+    streamAfter tip k = ExceptT $ withRegistry $ \registry -> do
         eItr <-
           ImmutableDB.streamAfterPoint
             immutableDB
@@ -478,8 +481,8 @@ streamAPI immutableDB = StreamAPI streamAfter
             tip
         case eItr of
           -- Snapshot is too recent
-          Left  err -> k $ Left  $ ImmutableDB.missingBlockPoint err
-          Right itr -> k $ Right $ streamUsing itr
+          Left  err -> runExceptT $ k $ Left  $ ImmutableDB.missingBlockPoint err
+          Right itr -> runExceptT $ k $ Right $ streamUsing itr
 
     streamUsing :: ImmutableDB.Iterator m blk blk -> m (NextBlock blk)
     streamUsing itr = ImmutableDB.iteratorNext itr >>= \case

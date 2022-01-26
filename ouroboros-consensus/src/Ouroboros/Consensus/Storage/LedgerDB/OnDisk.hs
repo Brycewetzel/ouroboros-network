@@ -1,18 +1,19 @@
-{-# LANGUAGE BangPatterns        #-}
-{-# LANGUAGE DataKinds           #-}
-{-# LANGUAGE DeriveGeneric       #-}
-{-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE KindSignatures      #-}
-{-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE MultiWayIf          #-}
-{-# LANGUAGE NamedFieldPuns      #-}
-{-# LANGUAGE RankNTypes          #-}
-{-# LANGUAGE RecordWildCards     #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections       #-}
-{-# LANGUAGE TypeApplications    #-}
-
-{-# LANGUAGE DerivingVia         #-}
+{-# LANGUAGE BangPatterns         #-}
+{-# LANGUAGE DataKinds            #-}
+{-# LANGUAGE DeriveGeneric        #-}
+{-# LANGUAGE DerivingVia          #-}
+{-# LANGUAGE FlexibleContexts     #-}
+{-# LANGUAGE KindSignatures       #-}
+{-# LANGUAGE LambdaCase           #-}
+{-# LANGUAGE MultiWayIf           #-}
+{-# LANGUAGE NamedFieldPuns       #-}
+{-# LANGUAGE RankNTypes           #-}
+{-# LANGUAGE RecordWildCards      #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
+{-# LANGUAGE StandaloneDeriving   #-}
+{-# LANGUAGE TupleSections        #-}
+{-# LANGUAGE TypeApplications     #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Ouroboros.Consensus.Storage.LedgerDB.OnDisk (
     -- * Opening the database
@@ -80,6 +81,8 @@ import           Ouroboros.Consensus.Util.IOLike
 import           Ouroboros.Consensus.Storage.FS.API
 import           Ouroboros.Consensus.Storage.FS.API.Types
 
+import           Cardano.Slotting.Slot (WithOrigin (At))
+import           Control.Monad.Trans.Except (throwE)
 import           Ouroboros.Consensus.Storage.LedgerDB.DiskPolicy
 import           Ouroboros.Consensus.Storage.LedgerDB.InMemory
 
@@ -104,7 +107,7 @@ data NextBlock blk = NoMoreBlocks | NextBlock blk
 -- tip to bring the ledger up to date with the tip of the immutable DB.
 --
 -- In CPS form to enable the use of 'withXYZ' style iterator init functions.
-data StreamAPI m blk = StreamAPI {
+data StreamAPI m e blk = StreamAPI {
       -- | Start streaming after the specified block up to the end of the
       -- immutable database.
         streamAfter :: forall a. HasCallStack
@@ -112,7 +115,7 @@ data StreamAPI m blk = StreamAPI {
           -- Reference to the block corresponding to the snapshot we found
           -- (or 'Point Origin' if we didn't find any)
 
-          -> (Either (RealPoint blk) (m (NextBlock blk)) -> m a)
+          -> (Either (RealPoint blk) (m (NextBlock blk)) -> ExceptT e m a)
           -- Get the next block (by value)
           --
           -- Should be @Left pt@ if the snapshot we found is more recent than the
@@ -121,29 +124,31 @@ data StreamAPI m blk = StreamAPI {
           -- got truncated due to disk corruption. The returned @pt@ is a
           -- 'RealPoint', not a 'Point', since it must always be possible to
           -- stream after genesis.
-          -> m a
+          -> ExceptT e m a
     }
 
 -- | Stream all blocks
 streamAll ::
      forall m blk e a. (Monad m, HasCallStack)
-  => StreamAPI m blk
+  => StreamAPI m e blk
   -> Point blk                 -- ^ Starting point for streaming
   -> (RealPoint blk -> e)      -- ^ Error when tip not found
   -> a                         -- ^ Starting point when tip /is/ found
-  -> (blk -> a -> m (Maybe a)) -- ^ Update function for each block with stop condition
+  -> (blk -> a -> ExceptT e m (Maybe a)) -- ^ Update function for each block with stop condition
   -> ExceptT e m a
-streamAll StreamAPI{..} tip notFound e f = ExceptT $
+streamAll StreamAPI{..} tip notFound e f =
     streamAfter tip $ \case
-      Left tip' -> return $ Left (notFound tip')
+      Left tip' -> throwError (notFound tip')
 
       Right getNext -> do
-        let go :: a -> m a
-            go a = do mNext <- getNext
+        let go :: a -> ExceptT e m a
+            go a = do mNext <- lift $ getNext
                       case mNext of
                         NoMoreBlocks -> return a
                         NextBlock b  -> maybe (return a) go =<< f b a
-        Right <$> go e
+        go e
+
+type StreamAPI' m blk = StreamAPI m (InitFailure blk) blk
 
 {-------------------------------------------------------------------------------
   Initialize the DB
@@ -170,7 +175,7 @@ data InitLog blk =
     --
     -- NOTE: We should /only/ see this if data corrupted occurred.
   | InitFailure DiskSnapshot (InitFailure blk) (InitLog blk)
-  deriving (Show, Eq, Generic)
+  deriving (Eq, Show, Generic)
 
 data OldLedgerInitParams m blk = OldLedgerInitParams {
     oldFS      :: SomeHasFS m
@@ -218,8 +223,9 @@ initLedgerDB ::
   -> (forall s. Decoder s (HeaderHash blk))
   -> LedgerDbCfg (ExtLedgerState blk)
   -> m (ExtLedgerState blk ValuesMK)                     -- ^ Genesis ledger state
-  -> StreamAPI m blk
-  -> m ((InitLog blk, InitLog blk), LedgerDB' blk, Word64)
+  -> StreamAPI' m blk
+  -> Bool
+  -> m ((Maybe (InitLog blk), InitLog blk), LedgerDB' blk, Word64)
 initLedgerDB replayTracer
              tracer
              OldLedgerInitParams{..}
@@ -227,29 +233,61 @@ initLedgerDB replayTracer
              decHash
              cfg
              getGenesisLedger
-             streamAPI = do
-    (initLog, ledgerDb)                    <- oldInitLedgerDB
-                                                          getGenesisLedger
-                                                          oldFS
-                                                          oldDecoder
-                                                          decHash
+             streamAPI
+             runAlsoOld = do
+    mOldLedgerDB                         <- if runAlsoOld
+                                            then Just
+                                                 <$> oldInitLedgerDB
+                                                       getGenesisLedger
+                                                       oldFS
+                                                       oldDecoder
+                                                       decHash
+                                            else return Nothing
     (initLog', ledgerDb', replayTracer') <- newInitLedgerDB
-                                                          replayTracer
-                                                          tracer
-                                                          getGenesisLedger
-                                                          newFS
-                                                          newDecoder
-                                                          decHash
-                                                          backend
+                                              replayTracer
+                                              tracer
+                                              getGenesisLedger
+                                              newFS
+                                              newDecoder
+                                              decHash
+                                              backend
 
-    let lgrDB = combineLedgerDBs ledgerDb ledgerDb'
-
-    ml <- runExceptT $ initStartingWith replayTracer' cfg backend streamAPI lgrDB
+    ml <- runExceptT $ case mOldLedgerDB of
+      Nothing -> let ledgerDb = combine Nothing ledgerDb' in
+        (Nothing,) <$> initStartingWith replayTracer' cfg backend streamAPI ledgerDb
+      Just (initLog, oldDb) -> do
+        (inSyncDB, replayed) <- case compare (pointSlot . getTip $ oldLedgerDbCurrent oldDb) (pointSlot . getTip $ ledgerDbCurrentNew ledgerDb') of
+          GT -> do
+            (ledgerDb'', replayed) <-
+              initOneDatabase streamAPI ledgerDb'
+                                (castPoint . getTip . ledgerDbCurrentNew)
+                                (\blk (db, rep) ->
+                                   if At (blockSlot blk) > (pointSlot . getTip $ oldLedgerDbCurrent oldDb)
+                                   then return Nothing
+                                   else Just . (, rep+1) . flip pushLedgerStateNew db <$>
+                                            ((either (\(p, e) -> throwE $ InitFailureReplay $ AnnLedgerError undefined p e) return) =<<
+                                              lift (defaultReadKeySets (readKeySets backend) $ newApplyBlock (ledgerDbCfg cfg) (ReapplyVal blk) db)))
+            return . (,replayed) $ combine (Just oldDb) ledgerDb''
+          LT -> do
+            (oldLedgerDb', _) <-
+              initOneDatabase streamAPI oldDb
+                                (castPoint . getTip . oldLedgerDbCurrent)
+                                (\blk (db, rep) -> if At (blockSlot blk) > (pointSlot . getTip $ ledgerDbCurrentNew ledgerDb')
+                                   then return Nothing
+                                   else Just <$> (, rep+1) <$> flip (pushLedgerStateOld (ledgerDbCfgSecParam cfg)) db <$>
+                                            ( (either (\(p, e) -> throwE $ InitFailureReplay $ AnnLedgerError undefined p e) (return . snd)) =<<
+                                              lift (defaultReadKeySets (readKeySets backend)
+                                                    $ oldApplyBlock (ledgerDbCfg cfg) (ReapplyVal blk) db)))
+            return . (,0) $ combine (Just oldLedgerDb') ledgerDb'
+          EQ -> return . (,0) $ combine (Just oldDb) ledgerDb'
+        (\(db, rep) -> (Just initLog, (db, rep + replayed))) <$> initStartingWith replayTracer' cfg backend streamAPI inSyncDB
 
     case ml of
       Left err -> error $  "invariant violation: invalid current chain:" <> show err
-      Right (ledgerDB, replayedBlocks) -> return ((initLog, initLog'), ledgerDB, replayedBlocks)
-
+      Right (initLog, (ledgerDB, replayedBlocks)) -> return ((initLog, initLog'), ledgerDB, replayedBlocks)
+  where
+    combine :: Maybe (OldLedgerDB (ExtLedgerState blk)) -> NewLedgerDB (ExtLedgerState blk) -> LedgerDB (ExtLedgerState blk)
+    combine = combineLedgerDBs  @(ExtLedgerState blk) @blk
 {-------------------------------------------------------------------------------
  Load snapshots from the disk
 -------------------------------------------------------------------------------}
@@ -436,7 +474,10 @@ data InitFailure blk =
 
     -- | The new-style snapshot is not in sync with the on-disk UTxO
   | InitFailureNotInSyncWithUTxO
+
+  | InitFailureReplay (AnnLedgerError (ExtLedgerState blk) blk)
   deriving (Show, Eq, Generic)
+
 
 mkOnDiskLedgerStDb :: SomeHasFS m -> m (OnDiskLedgerStDb m l blk)
 mkOnDiskLedgerStDb = undefined
@@ -485,6 +526,22 @@ data OnDiskLedgerStDb m l blk =
   }
   deriving NoThunks via OnlyCheckWhnfNamed "OnDiskLedgerStDb" (OnDiskLedgerStDb m l blk)
 
+initOneDatabase ::
+  forall m blk ledgerDb. (
+         Monad m
+       , HasCallStack
+       )
+  => StreamAPI' m blk
+  -> ledgerDb
+  -> (ledgerDb -> Point blk)
+  -> (blk -> (ledgerDb, Word64) -> ExceptT (InitFailure blk) m (Maybe (ledgerDb, Word64)))
+  -> ExceptT (InitFailure blk) m (ledgerDb, Word64)
+initOneDatabase streamAPI initDb getPoint push = do
+    streamAll streamAPI (getPoint initDb)
+      InitFailureTooRecent
+      (initDb, 0)
+      push
+
 -- | Attempt to initialize the ledger DB starting from the given ledger DB by
 -- streaming blocks from the immutable database up to the immutable database
 -- tip.
@@ -500,7 +557,7 @@ initStartingWith ::
   => Tracer m (ReplayStart blk -> ReplayGoal blk -> TraceReplayEvent blk)
   -> LedgerDbCfg (ExtLedgerState blk)
   -> OnDiskLedgerStDb m (ExtLedgerState blk) blk
-  -> StreamAPI m blk
+  -> StreamAPI' m blk
   -> LedgerDB' blk
   -> ExceptT (InitFailure blk) m (LedgerDB' blk, Word64)
 initStartingWith tracer cfg onDiskLedgerDbSt streamAPI initDb = do
@@ -509,10 +566,10 @@ initStartingWith tracer cfg onDiskLedgerDbSt streamAPI initDb = do
       (initDb, 0)
       push
   where
-    push :: blk -> (LedgerDB' blk, Word64) -> m (Maybe (LedgerDB' blk, Word64))
-    push blk !(!db, !replayed) = do
-        !db' <- defaultReadKeySets (readKeySets onDiskLedgerDbSt) $
-                  ledgerDbPush cfg (ReapplyVal blk) db
+    push :: blk -> (LedgerDB' blk, Word64) -> ExceptT (InitFailure blk) m (Maybe (LedgerDB' blk, Word64))
+    push blk !(!db, !replayed) = lift $ do
+        !db' <- defaultReadKeySets (readKeySets onDiskLedgerDbSt)
+                $ ledgerDbPush cfg (ReapplyVal blk) db
         -- TODO: here it is important that we don't have a lock acquired.
 
         -- Alternatively, we could chose not to check for a lock when we're
@@ -537,7 +594,7 @@ initStartingWith tracer cfg onDiskLedgerDbSt streamAPI initDb = do
                        (ledgerState (ledgerDbCurrent db''))
 
         traceWith tracer (ReplayedBlock (blockRealPoint blk) events)
-        return $ Just (maybeSwitch db'', replayed')
+        return $ Just (db'', replayed')
 
 {-------------------------------------------------------------------------------
   Write to disk
@@ -749,7 +806,7 @@ data TraceEvent blk
     -- ^ A snapshot was written to disk.
   | DeletedSnapshot DiskSnapshot
     -- ^ An old or invalid on-disk snapshot was deleted
-  deriving (Generic, Eq, Show)
+  deriving (Show, Eq, Generic)
 
 -- | Which point the replay started from
 newtype ReplayStart blk = ReplayStart (Point blk) deriving (Eq, Show)
